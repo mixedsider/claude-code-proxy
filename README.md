@@ -1,73 +1,73 @@
-# Anthropic API Proxy for Gemini & OpenAI Models 🔄
+# Gemini 및 OpenAI 모델을 위한 Anthropic API 프록시 🔄
 
-**Use Anthropic clients (like Claude Code) with Gemini, OpenAI, or direct Anthropic backends.** 🤝
+**Claude Code와 같은 Anthropic 클라이언트를 Gemini, OpenAI 또는 직접적인 Anthropic 백엔드와 함께 사용하세요.** 🤝
 
-A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthropic models themselves (a transparent proxy of sorts), all via LiteLLM. 🌉
+Anthropic 클라이언트를 Gemini, OpenAI 또는 Anthropic 모델 자체(일종의 투명 프록시)와 함께 사용할 수 있게 해주는 프록시 서버입니다. 모든 과정은 LiteLLM을 통해 이루어집니다. 🌉
 
 
-![Anthropic API Proxy](pic.png)
+![Anthropic API 프록시](pic.png)
 
-## Quick Start ⚡
+## 빠른 시작 ⚡
 
-### Prerequisites
+### 사전 요구 사항
 
-- OpenAI API key 🔑
-- Google AI Studio (Gemini) API key (if using Google provider) 🔑
-- Google Cloud Project with Vertex AI API enabled (if using Application Default Credentials for Gemini) ☁️
-- [uv](https://github.com/astral-sh/uv) installed.
+- OpenAI API 키 🔑
+- Google AI Studio (Gemini) API 키 (Google 제공자를 사용하는 경우) 🔑
+- Vertex AI API가 활성화된 Google Cloud 프로젝트 (Gemini에 애플리케이션 기본 자격 증명을 사용하는 경우) ☁️
+- [uv](https://github.com/astral-sh/uv) 설치됨.
 
-### Setup 🛠️
+### 설정 🛠️
 
-#### From source
+#### 소스에서 설치
 
-1. **Clone this repository**:
+1. **저장소 복제**:
    ```bash
    git clone https://github.com/1rgs/claude-code-proxy.git
    cd claude-code-proxy
    ```
 
-2. **Install uv** (if you haven't already):
+2. **uv 설치** (아직 설치하지 않은 경우):
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
-   *(`uv` will handle dependencies based on `pyproject.toml` when you run the server)*
+   *(`uv`는 서버를 실행할 때 `pyproject.toml`을 기반으로 의존성을 처리합니다)*
 
-3. **Configure Environment Variables**:
-   Copy the example environment file:
+3. **환경 변수 설정**:
+   예시 환경 파일을 복사합니다:
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` and fill in your API keys and model configurations:
+   `.env` 파일을 편집하여 API 키와 모델 설정을 입력합니다:
 
-   *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
-   *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
-   *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
-   *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `ANTHROPIC_API_KEY`: (선택 사항) Anthropic 모델로 프록시하는 경우에만 필요합니다.
+   *   `OPENAI_API_KEY`: OpenAI API 키 (기본 OpenAI 설정을 사용하거나 폴백용으로 필요).
+   *   `GEMINI_API_KEY`: Google AI Studio (Gemini) API 키 (`PREFERRED_PROVIDER=google` 및 `USE_VERTEX_AUTH=false`인 경우 필요).
+   *   `USE_VERTEX_AUTH` (선택 사항): 애플리케이션 기본 자격 증명(ADC)을 사용하려면 `true`로 설정합니다 (정적 API 키가 필요하지 않음). 주의: `USE_VERTEX_AUTH=true`일 때 `VERTEX_PROJECT`와 `VERTEX_LOCATION`을 설정해야 합니다.
+   *   `VERTEX_PROJECT` (선택 사항): Google Cloud 프로젝트 ID (`PREFERRED_PROVIDER=google` 및 `USE_VERTEX_AUTH=true`인 경우 필요).
+   *   `VERTEX_LOCATION` (선택 사항): Vertex AI를 위한 Google Cloud 리전 (예: `us-central1`) (`PREFERRED_PROVIDER=google` 및 `USE_VERTEX_AUTH=true`인 경우 필요).
+   *   `PREFERRED_PROVIDER` (선택 사항): `openai` (기본값), `google`, 또는 `anthropic`으로 설정합니다. 이는 `haiku`/`sonnet` 매핑을 위한 기본 백엔드를 결정합니다.
+   *   `BIG_MODEL` (선택 사항): `sonnet` 요청을 매핑할 모델입니다. 기본값은 `gpt-4.5-preview` (`PREFERRED_PROVIDER=openai`인 경우) 또는 `gemini-2.0-pro-exp-02-05`입니다. `PREFERRED_PROVIDER=anthropic`일 때는 무시됩니다.
+   *   `SMALL_MODEL` (선택 사항): `haiku` 요청을 매핑할 모델입니다. 기본값은 `gpt-4o-mini` (`PREFERRED_PROVIDER=openai`인 경우) 또는 `gemini-2.0-flash`입니다. `PREFERRED_PROVIDER=anthropic`일 때는 무시됩니다.
 
-   **Mapping Logic:**
-   - If `PREFERRED_PROVIDER=openai` (default), `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/`.
-   - If `PREFERRED_PROVIDER=google`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
-   - If `PREFERRED_PROVIDER=anthropic`, `haiku`/`sonnet` requests are passed directly to Anthropic with the `anthropic/` prefix without remapping to different models.
+   **매핑 로직:**
+   - `PREFERRED_PROVIDER=openai` (기본값)인 경우, `haiku`/`sonnet`은 `openai/` 접두사가 붙은 `SMALL_MODEL`/`BIG_MODEL`로 매핑됩니다.
+   - `PREFERRED_PROVIDER=google`인 경우, `haiku`/`sonnet`은 해당 모델이 서버의 알려진 `GEMINI_MODELS` 목록에 있는 경우 `gemini/` 접두사가 붙은 `SMALL_MODEL`/`BIG_MODEL`로 매핑됩니다 (그렇지 않으면 OpenAI 매핑으로 대체됨).
+   - `PREFERRED_PROVIDER=anthropic`인 경우, `haiku`/`sonnet` 요청은 다른 모델로 재매핑되지 않고 `anthropic/` 접두사와 함께 Anthropic으로 직접 전달됩니다.
 
-4. **Run the server**:
+4. **서버 실행**:
    ```bash
    uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
    ```
-   *(`--reload` is optional, for development)*
+   *(`--reload`는 개발용 선택 사항입니다)*
 
-#### Docker
+#### Docker 사용
 
-If using docker, download the example environment file to `.env` and edit it as described above.
+Docker를 사용하는 경우, 위에 설명된 대로 예시 환경 파일을 `.env`로 다운로드하고 편집합니다.
 ```bash
 curl -O .env https://raw.githubusercontent.com/1rgs/claude-code-proxy/refs/heads/main/.env.example
 ```
 
-Then, you can either start the container with [docker compose](https://docs.docker.com/compose/) (preferred):
+그런 다음, [docker compose](https://docs.docker.com/compose/)를 사용하여 컨테이너를 시작할 수 있습니다 (권장):
 
 ```yml
 services:
@@ -79,39 +79,39 @@ services:
       - 8082:8082
 ```
 
-Or with a command:
+또는 명령어로 실행:
 
 ```bash
 docker run -d --env-file .env -p 8082:8082 ghcr.io/1rgs/claude-code-proxy:latest
 ```
 
-### Using with Claude Code 🎮
+### Claude Code와 함께 사용하기 🎮
 
-1. **Install Claude Code** (if you haven't already):
+1. **Claude Code 설치** (아직 설치하지 않은 경우):
    ```bash
    npm install -g @anthropic-ai/claude-code
    ```
 
-2. **Connect to your proxy**:
+2. **프록시에 연결**:
    ```bash
    ANTHROPIC_BASE_URL=http://localhost:8082 claude
    ```
 
-3. **That's it!** Your Claude Code client will now use the configured backend models (defaulting to Gemini) through the proxy. 🎯
+3. **완료되었습니다!** 이제 Claude Code 클라이언트는 프록시를 통해 설정된 백엔드 모델(기본값 Gemini)을 사용합니다. 🎯
 
-## Model Mapping 🗺️
+## 모델 매핑 🗺️
 
-The proxy automatically maps Claude models to either OpenAI or Gemini models based on the configured model:
+프록시는 설정된 모델에 따라 Claude 모델을 OpenAI 또는 Gemini 모델로 자동으로 매핑합니다:
 
-| Claude Model | Default Mapping | When BIG_MODEL/SMALL_MODEL is a Gemini model |
+| Claude 모델 | 기본 매핑 | BIG_MODEL/SMALL_MODEL이 Gemini 모델일 때 |
 |--------------|--------------|---------------------------|
-| haiku | openai/gpt-4o-mini | gemini/[model-name] |
-| sonnet | openai/gpt-4o | gemini/[model-name] |
+| haiku | openai/gpt-4o-mini | gemini/[모델명] |
+| sonnet | openai/gpt-4o | gemini/[모델명] |
 
-### Supported Models
+### 지원되는 모델
 
-#### OpenAI Models
-The following OpenAI models are supported with automatic `openai/` prefix handling:
+#### OpenAI 모델
+다음 OpenAI 모델은 자동 `openai/` 접두사 처리가 지원됩니다:
 - o3-mini
 - o1
 - o1-mini
@@ -125,87 +125,87 @@ The following OpenAI models are supported with automatic `openai/` prefix handli
 - gpt-4.1
 - gpt-4.1-mini
 
-#### Gemini Models
-The following Gemini models are supported with automatic `gemini/` prefix handling:
+#### Gemini 모델
+다음 Gemini 모델은 자동 `gemini/` 접두사 처리가 지원됩니다:
 - gemini-2.5-pro
 - gemini-2.5-flash
 
-### Model Prefix Handling
-The proxy automatically adds the appropriate prefix to model names:
-- OpenAI models get the `openai/` prefix
-- Gemini models get the `gemini/` prefix
-- The BIG_MODEL and SMALL_MODEL will get the appropriate prefix based on whether they're in the OpenAI or Gemini model lists
+### 모델 접두사 처리
+프록시는 모델 이름에 적절한 접두사를 자동으로 추가합니다:
+- OpenAI 모델은 `openai/` 접두사가 붙습니다.
+- Gemini 모델은 `gemini/` 접두사가 붙습니다.
+- BIG_MODEL 및 SMALL_MODEL은 OpenAI 또는 Gemini 모델 목록에 있는지 여부에 따라 적절한 접두사가 붙습니다.
 
-For example:
-- `gpt-4o` becomes `openai/gpt-4o`
-- `gemini-2.5-pro-preview-03-25` becomes `gemini/gemini-2.5-pro-preview-03-25`
-- When BIG_MODEL is set to a Gemini model, Claude Sonnet will map to `gemini/[model-name]`
+예시:
+- `gpt-4o`는 `openai/gpt-4o`가 됩니다.
+- `gemini-2.5-pro-preview-03-25`는 `gemini/gemini-2.5-pro-preview-03-25`가 됩니다.
+- BIG_MODEL이 Gemini 모델로 설정된 경우, Claude Sonnet은 `gemini/[모델명]`으로 매핑됩니다.
 
-### Customizing Model Mapping
+### 모델 매핑 사용자 정의
 
-Control the mapping using environment variables in your `.env` file or directly:
+`.env` 파일의 환경 변수를 사용하거나 직접 매핑을 제어할 수 있습니다:
 
-**Example 1: Default (Use OpenAI)**
-No changes needed in `.env` beyond API keys, or ensure:
+**예시 1: 기본값 (OpenAI 사용)**
+API 키 외에는 `.env`를 변경할 필요가 없거나 다음과 같이 설정합니다:
 ```dotenv
 OPENAI_API_KEY="your-openai-key"
-GEMINI_API_KEY="your-google-key" # Needed if PREFERRED_PROVIDER=google
-# PREFERRED_PROVIDER="openai" # Optional, it's the default
-# BIG_MODEL="gpt-4.1" # Optional, it's the default
-# SMALL_MODEL="gpt-4.1-mini" # Optional, it's the default
+GEMINI_API_KEY="your-google-key" # PREFERRED_PROVIDER=google인 경우 필요
+# PREFERRED_PROVIDER="openai" # 선택 사항, 기본값임
+# BIG_MODEL="gpt-4.1" # 선택 사항, 기본값임
+# SMALL_MODEL="gpt-4.1-mini" # 선택 사항, 기본값임
 ```
 
-**Example 2a: Prefer Google (using GEMINI_API_KEY)**
+**예시 2a: Google 선호 (GEMINI_API_KEY 사용)**
 ```dotenv
 GEMINI_API_KEY="your-google-key"
-OPENAI_API_KEY="your-openai-key" # Needed for fallback
+OPENAI_API_KEY="your-openai-key" # 폴백을 위해 필요
 PREFERRED_PROVIDER="google"
-# BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
-# SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
+# BIG_MODEL="gemini-2.5-pro" # 선택 사항, Google 선호 시 기본값
+# SMALL_MODEL="gemini-2.5-flash" # 선택 사항, Google 선호 시 기본값
 ```
 
-**Example 2b: Prefer Google (using Vertex AI with Application Default Credentials)**
+**예시 2b: Google 선호 (애플리케이션 기본 자격 증명과 함께 Vertex AI 사용)**
 ```dotenv
-OPENAI_API_KEY="your-openai-key" # Needed for fallback
+OPENAI_API_KEY="your-openai-key" # 폴백을 위해 필요
 PREFERRED_PROVIDER="google"
 VERTEX_PROJECT="your-gcp-project-id"
 VERTEX_LOCATION="us-central1"
 USE_VERTEX_AUTH=true
-# BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
-# SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
+# BIG_MODEL="gemini-2.5-pro" # 선택 사항, Google 선호 시 기본값
+# SMALL_MODEL="gemini-2.5-flash" # 선택 사항, Google 선호 시 기본값
 ```
 
-**Example 3: Use Direct Anthropic ("Just an Anthropic Proxy" Mode)**
+**예시 3: 직접 Anthropic 사용 ("단순 Anthropic 프록시" 모드)**
 ```dotenv
 ANTHROPIC_API_KEY="sk-ant-..."
 PREFERRED_PROVIDER="anthropic"
-# BIG_MODEL and SMALL_MODEL are ignored in this mode
-# haiku/sonnet requests are passed directly to Anthropic models
+# 이 모드에서 BIG_MODEL 및 SMALL_MODEL은 무시됩니다.
+# haiku/sonnet 요청은 Anthropic 모델로 직접 전달됩니다.
 ```
 
-*Use case: This mode enables you to use the proxy infrastructure (for logging, middleware, request/response processing, etc.) while still using actual Anthropic models rather than being forced to remap to OpenAI or Gemini.*
+*사용 사례: 이 모드는 OpenAI나 Gemini로 재매핑하지 않고 실제 Anthropic 모델을 사용하면서도 프록시 인프라(로깅, 미들웨어, 요청/응답 처리 등)를 활용하고 싶을 때 유용합니다.*
 
-**Example 4: Use Specific OpenAI Models**
+**예시 4: 특정 OpenAI 모델 사용**
 ```dotenv
 OPENAI_API_KEY="your-openai-key"
 GEMINI_API_KEY="your-google-key"
 PREFERRED_PROVIDER="openai"
-BIG_MODEL="gpt-4o" # Example specific model
-SMALL_MODEL="gpt-4o-mini" # Example specific model
+BIG_MODEL="gpt-4o" # 특정 모델 예시
+SMALL_MODEL="gpt-4o-mini" # 특정 모델 예시
 ```
 
-## How It Works 🧩
+## 작동 원리 🧩
 
-This proxy works by:
+이 프록시는 다음과 같이 작동합니다:
 
-1. **Receiving requests** in Anthropic's API format 📥
-2. **Translating** the requests to OpenAI format via LiteLLM 🔄
-3. **Sending** the translated request to OpenAI 📤
-4. **Converting** the response back to Anthropic format 🔄
-5. **Returning** the formatted response to the client ✅
+1. Anthropic의 API 형식으로 **요청을 받음** 📥
+2. LiteLLM을 통해 요청을 OpenAI 형식으로 **번역** 🔄
+3. 번역된 요청을 백엔드(OpenAI 등)로 **전송** 📤
+4. 응답을 다시 Anthropic 형식으로 **변환** 🔄
+5. 형식화된 응답을 클라이언트에 **반환** ✅
 
-The proxy handles both streaming and non-streaming responses, maintaining compatibility with all Claude clients. 🌊
+프록시는 스트리밍 및 비스트리밍 응답을 모두 처리하며, 모든 Claude 클라이언트와의 호환성을 유지합니다. 🌊
 
-## Contributing 🤝
+## 기여하기 🤝
 
-Contributions are welcome! Please feel free to submit a Pull Request. 🎁
+기여는 언제나 환영합니다! 자유롭게 Pull Request를 제출해 주세요. 🎁
