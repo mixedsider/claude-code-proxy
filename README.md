@@ -1,6 +1,6 @@
-# Gemini 및 OpenAI 모델을 위한 Anthropic API 프록시 🔄
+# Gemini, GPT 및 로컬LLM 을 위한 Anthropic API 프록시 🔄
 
-**Claude Code와 같은 Anthropic 클라이언트를 Gemini, OpenAI 또는 직접적인 Anthropic 백엔드와 함께 사용하세요.** 🤝
+**Claude Code와 같은 Anthropic 클라이언트를 Gemini, OpenAI, LM Studio, Ollama 또는 직접적인 Anthropic 백엔드와 함께 사용하세요.** 🤝
 
 Anthropic 클라이언트를 Gemini, OpenAI 또는 Anthropic 모델 자체(일종의 투명 프록시)와 함께 사용할 수 있게 해주는 프록시 서버입니다. 모든 과정은 LiteLLM을 통해 이루어집니다. 🌉
 
