@@ -206,6 +206,28 @@ def map_model_to_litellm(v: str) -> str:
     
     return v
 
+def clean_thought_content(content: str) -> str:
+    """Removes thinking/thought blocks from the model output.
+    Supports various formats like <thought>...</thought>, ● { "thought": "..." }, [THOUGHT]...[/THOUGHT], etc.
+    """
+    if not content:
+        return content
+    
+    # 1. Handle HTML-like tags: <thought>...</thought> or <thinking>...</thinking>
+    content = re.sub(r'<(thought|thinking)>.*?</\1>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 2. Handle the specific Gemma/JSON-like pattern: ● { "thought": "..." }
+    # This pattern often has a bullet point and then a JSON block
+    content = re.sub(r'●\s*{\s*"thought":\s*".*?"\s*}', '', content, flags=re.DOTALL)
+    
+    # 3. Handle bracketed tags: [THOUGHT]...[/THOUGHT]
+    content = re.sub(r'\[THOUGHT\].*?\[/THOUGHT\]', '', content, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 4. Handle just the JSON blob if it appears alone
+    content = re.sub(r'{\s*"thought":\s*".*?"\s*}', '', content, flags=re.DOTALL)
+    
+    return content.strip()
+
 # Helper function to clean schema for Gemini
 def clean_gemini_schema(schema: Any) -> Any:
     """Recursively removes unsupported fields from a JSON schema for Gemini."""
@@ -673,7 +695,10 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         
         # Add text content block if present (text might be None or empty for pure tool call responses)
         if content_text is not None and content_text != "":
-            content.append({"type": "text", "text": content_text})
+            # Clean any internal thought process from the content
+            content_text = clean_thought_content(content_text)
+            if content_text:
+                content.append({"type": "text", "text": content_text})
         
         # Add tool calls if present (tool_use in Anthropic format) - only for Claude models
         if tool_calls and is_claude_model:
@@ -853,12 +878,12 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         output_tokens = 0
         has_sent_stop_reason = False
         last_tool_index = 0
+        full_content = "" # Raw content from model
+        emitted_content = "" # Already cleaned and sent content
         
         # Process each chunk
         async for chunk in response_generator:
             try:
-
-                
                 # Check if this is the end of the response with usage data
                 if hasattr(chunk, 'usage') and chunk.usage is not None:
                     if hasattr(chunk.usage, 'prompt_tokens'):
@@ -891,12 +916,19 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                     
                     # Accumulate text content
                     if delta_content is not None and delta_content != "":
-                        accumulated_text += delta_content
+                        full_content += delta_content
+                        accumulated_text = full_content # For legacy tracking
+                        
+                        # 3-Tier Thought Filtering: Apply cleaning logic to full content
+                        clean_content = clean_thought_content(full_content)
+                        # Only emit the 'new' part of the clean content
+                        new_clean_text = clean_content[len(emitted_content):]
                         
                         # Always emit text deltas if no tool calls started
-                        if tool_index is None and not text_block_closed:
+                        if new_clean_text and tool_index is None and not text_block_closed:
                             text_sent = True
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
+                            emitted_content += new_clean_text
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': new_clean_text}})}\n\n"
                     
                     # Process tool calls
                     delta_tool_calls = None

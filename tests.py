@@ -186,7 +186,7 @@ TEST_SCENARIOS = {
 
     # Ollama test (local)
     "ollama": {
-        "model": "ollama/qwen3.5:0.8b", # Updated to use your local model
+        "model": "ollama/gemma4:e4b-it-q4_K_M", # Updated to use your local model
         "max_tokens": 100,
         "messages": [
             {"role": "user", "content": "Hi! Just say 'Ollama is working' if you can hear me."}
