@@ -224,9 +224,9 @@ def clean_thought_content(content: str) -> str:
     content = re.sub(r'\[THOUGHT\].*?\[/THOUGHT\]', '', content, flags=re.DOTALL | re.IGNORECASE)
     
     # 4. Handle just the JSON blob if it appears alone (and might have a thought field or name/content)
-    # If the response is a JSON with 'content', extract it
+    # If the response is a JSON with 'content', 'text', 'message', or 'response', extract it
     try:
-        # Check if the string or a substring is a valid JSON with a 'content' field
+        # Check if the string or a substring is a valid JSON
         # We search for the first { and last } to find a potential JSON block
         start_idx = content.find('{')
         end_idx = content.rfind('}')
@@ -234,10 +234,17 @@ def clean_thought_content(content: str) -> str:
             json_str = content[start_idx:end_idx+1]
             data = json.loads(json_str)
             if isinstance(data, dict):
-                # If there's a 'content' field, we prefer it as the primary response
-                if "content" in data:
-                    return str(data["content"]).strip()
-                # If there's a 'thought' field, it was just the thought, so discard it
+                # Check for common text fields in priority order
+                for key in ["content", "text", "message", "response"]:
+                    if key in data and data[key]:
+                        # If the value is a dict itself (e.g. {"text": {"content": "..."}}), recurse once
+                        if isinstance(data[key], dict):
+                            for subkey in ["content", "text"]:
+                                if subkey in data[key]:
+                                    return str(data[key][subkey]).strip()
+                        return str(data[key]).strip()
+                
+                # If there's a 'thought' field and no other text fields, it was just the thought, so discard it
                 if "thought" in data and len(data) == 1:
                     content = content[:start_idx] + content[end_idx+1:]
     except (json.JSONDecodeError, Exception):
