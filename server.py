@@ -18,9 +18,6 @@ import sys
 # Load environment variables from .env file
 load_dotenv()
 
-# CI/Mocking configuration
-MOCK_LLM = os.environ.get("MOCK_LLM", "False").lower() == "true"
-
 # Configure logging
 logging.basicConfig(
     level=logging.WARN,  # Change to INFO level to show more details
@@ -79,11 +76,6 @@ for handler in logger.handlers:
         handler.setFormatter(ColorizedFormatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 app = FastAPI()
-
-@app.get("/health")
-async def health_check():
-    """Simple health check endpoint for CI/CD."""
-    return {"status": "ok", "mock_mode": MOCK_LLM, "timestamp": datetime.now().isoformat()}
 
 # Get API keys from environment
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -1243,18 +1235,6 @@ async def create_message(
         
         # Only log basic info about the request, not the full details
         logger.info(f"Model: {display_model} -> {litellm_request['model']}")
-        
-        # Handle Mock Mode for CI/Testing
-        if MOCK_LLM:
-            logger.info(f"🛠️ MOCK MODE: Skipping actual LLM call for {litellm_request['model']}")
-            return MessagesResponse(
-                id=f"mock_{uuid.uuid4()}",
-                model=litellm_request["model"],
-                role="assistant",
-                content=[ContentBlockText(type="text", text=f"Mocked response for model: {litellm_request['model']}")],
-                stop_reason="end_turn",
-                usage=Usage(input_tokens=10, output_tokens=10)
-            )
         
         # Handle streaming mode
         if request.stream:
