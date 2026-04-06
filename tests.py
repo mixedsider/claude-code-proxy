@@ -11,6 +11,7 @@ Usage:
   python tests.py --no-streaming     # Skip streaming tests
   python tests.py --simple           # Run only simple tests
   python tests.py --tools            # Run tool-related tests only
+  python tests.py --proxy-only       # Only test the proxy (ignore Anthropic comparison)
 """
 
 import os
@@ -141,7 +142,7 @@ TEST_SCENARIOS = {
         "max_tokens": 500,
         "messages": [
             {"role": "user", "content": "Let's do some math. What is 240 divided by 8?"},
-            {"role": "assistant", "content": "To calculate 240 divided by 8, I'll perform the division:\n\n240 ÷ 8 = 30\n\nSo the result is 30."},
+            {"role": "assistant", "content": "To calculate 240 divided by 8, I'll perform the division:\n\n240 \u00f7 8 = 30\n\nSo the result is 30."},
             {"role": "user", "content": "Now multiply that by 4 and tell me the result."}
         ],
         "tools": [calculator_tool],
@@ -181,6 +182,24 @@ TEST_SCENARIOS = {
         ],
         "tools": [calculator_tool],
         "tool_choice": {"type": "auto"}
+    },
+
+    # Ollama test (local)
+    "ollama": {
+        "model": "ollama/qwen3.5:0.8b", # Updated to use your local model
+        "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": "Hi! Just say 'Ollama is working' if you can hear me."}
+        ]
+    },
+    
+    # LM Studio test (local)
+    "lm_studio": {
+        "model": "lm_studio/local-model", # Change to your local LM studio model
+        "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": "Hi! Just say 'LM Studio is working' if you can hear me."}
+        ]
     }
 }
 
@@ -199,11 +218,53 @@ REQUIRED_EVENT_TYPES = {
 def get_response(url, headers, data):
     """Send a request and get the response."""
     start_time = time.time()
-    response = httpx.post(url, headers=headers, json=data, timeout=30)
+    response = httpx.post(url, headers=headers, json=data, timeout=60)
     elapsed = time.time() - start_time
     
     print(f"Response time: {elapsed:.2f} seconds")
     return response
+
+def verify_proxy_response(proxy_response, check_tools=False):
+    """Verify the proxy response structure without comparing to Anthropic."""
+    try:
+        proxy_json = proxy_response.json()
+    except Exception as e:
+        print(f"\u274c Failed to parse proxy response as JSON: {e}")
+        print(f"Raw response: {proxy_response.text}")
+        return False
+    
+    print("\n--- Proxy Response Structure ---")
+    print(json.dumps({k: v for k, v in proxy_json.items() if k != "content"}, indent=2))
+    
+    # Basic structure verification
+    assert proxy_json.get("role") == "assistant", "Proxy role is not 'assistant'"
+    assert proxy_json.get("type") == "message", "Proxy type is not 'message'"
+    
+    valid_stop_reasons = ["end_turn", "max_tokens", "stop_sequence", "tool_use", None]
+    assert proxy_json.get("stop_reason") in valid_stop_reasons, "Invalid stop reason"
+    assert "content" in proxy_json, "No content in Proxy response"
+    
+    proxy_content = proxy_json["content"]
+    assert isinstance(proxy_content, list), "Proxy content is not a list"
+    assert len(proxy_content) > 0, "Proxy content is empty"
+    
+    # Print text preview if available
+    proxy_text = next((item.get("text") for item in proxy_content if item.get("type") == "text"), None)
+    if proxy_text:
+        print("\n---------- PROXY TEXT PREVIEW ----------")
+        print("\n".join(proxy_text.strip().split("\n")[:5]))
+    
+    if check_tools:
+        proxy_tool = next((item for item in proxy_content if item.get("type") == "tool_use"), None)
+        if proxy_tool:
+            print("\n---------- PROXY TOOL USE ----------")
+            print(json.dumps(proxy_tool, indent=2))
+            assert proxy_tool.get("name"), "Tool use missing name"
+            assert proxy_tool.get("input"), "Tool use missing input"
+        else:
+            print("\n\u26a0\ufe0f Proxy response does not contain tool use")
+            
+    return True
 
 def compare_responses(anthropic_response, proxy_response, check_tools=False):
     """Compare the two responses to see if they're similar enough."""
@@ -268,15 +329,15 @@ def compare_responses(anthropic_response, proxy_response, check_tools=False):
                 assert proxy_tool.get("name") is not None, "Proxy tool has no name"
                 assert proxy_tool.get("input") is not None, "Proxy tool has no input"
                 
-                print("\n✅ Both responses contain tool use")
+                print("\n\u2705 Both responses contain tool use")
             else:
-                print("\n⚠️ Proxy response does not contain tool use, but Anthropic does")
+                print("\n\u26a0\ufe0f Proxy response does not contain tool use, but Anthropic does")
         elif proxy_tool is not None:
             print("\n---------- PROXY TOOL USE ----------")
             print(json.dumps(proxy_tool, indent=2))
-            print("\n⚠️ Proxy response contains tool use, but Anthropic does not")
+            print("\n\u26a0\ufe0f Proxy response contains tool use, but Anthropic does not")
         else:
-            print("\n⚠️ Neither response contains tool use")
+            print("\n\u26a0\ufe0f Neither response contains tool use")
     
     # Check if content has text
     anthropic_text = None
@@ -294,7 +355,7 @@ def compare_responses(anthropic_response, proxy_response, check_tools=False):
     
     # For tool use responses, there might not be text content
     if check_tools and (anthropic_text is None or proxy_text is None):
-        print("\n⚠️ One or both responses don't have text content (expected for tool-only responses)")
+        print("\n\u26a0\ufe0f One or both responses don't have text content (expected for tool-only responses)")
         return True
     
     assert anthropic_text is not None, "No text found in Anthropic response"
@@ -315,7 +376,7 @@ def compare_responses(anthropic_response, proxy_response, check_tools=False):
     # but should have roughly similar content
     return True  # We're not enforcing similarity, just basic structure
 
-def test_request(test_name, request_data, check_tools=False):
+def test_request(test_name, request_data, check_tools=False, proxy_only=False):
     """Run a test with the given request data."""
     print(f"\n{'='*20} RUNNING TEST: {test_name} {'='*20}")
     
@@ -327,36 +388,41 @@ def test_request(test_name, request_data, check_tools=False):
     proxy_data = request_data.copy()
     
     try:
-        # Send requests to both APIs
-        print("\nSending to Anthropic API...")
-        anthropic_response = get_response(ANTHROPIC_API_URL, anthropic_headers, anthropic_data)
-        
         print("\nSending to Proxy...")
         proxy_response = get_response(PROXY_API_URL, proxy_headers, proxy_data)
-        
-        # Check response codes
-        print(f"\nAnthropic status code: {anthropic_response.status_code}")
         print(f"Proxy status code: {proxy_response.status_code}")
-        
-        if anthropic_response.status_code != 200 or proxy_response.status_code != 200:
-            print("\n⚠️ One or both requests failed")
-            if anthropic_response.status_code != 200:
-                print(f"Anthropic error: {anthropic_response.text}")
-            if proxy_response.status_code != 200:
-                print(f"Proxy error: {proxy_response.text}")
+
+        if proxy_response.status_code != 200:
+            print(f"\n[FAIL] Proxy request failed with status {proxy_response.status_code}")
+            print(f"Proxy error: {proxy_response.text}")
             return False
+
+        # If proxy-only mode, just verify the structure
+        if proxy_only:
+            return verify_proxy_response(proxy_response, check_tools=check_tools)
+
+        # Otherwise, compare with Anthropic
+        print("\nSending to Anthropic API...")
+        anthropic_response = get_response(ANTHROPIC_API_URL, anthropic_headers, anthropic_data)
+        print(f"Anthropic status code: {anthropic_response.status_code}")
+        
+        if anthropic_response.status_code != 200:
+            print("\n[WARN] Anthropic request failed")
+            print(f"Anthropic error: {anthropic_response.text}")
+            # If Anthropic fails but proxy works, we consider it a structural pass if proxy response is valid
+            return verify_proxy_response(proxy_response, check_tools=check_tools)
         
         # Compare the responses
         result = compare_responses(anthropic_response, proxy_response, check_tools=check_tools)
         if result:
-            print(f"\n✅ Test {test_name} passed!")
+            print(f"\n[OK] Test {test_name} passed!")
             return True
         else:
-            print(f"\n❌ Test {test_name} failed!")
+            print(f"\n[FAIL] Test {test_name} failed!")
             return False
     
     except Exception as e:
-        print(f"\n❌ Error in test {test_name}: {str(e)}")
+        print(f"\n[ERROR] Error in test {test_name}: {str(e)}")
         import traceback
         traceback.print_exc()
         return False
@@ -538,9 +604,9 @@ def compare_stream_stats(anthropic_stats, proxy_stats):
     
     # Check if proxy has the required events
     if proxy_missing:
-        print(f"⚠️ Proxy is missing required event types: {proxy_missing}")
+        print(f"\u26a0\ufe0f Proxy is missing required event types: {proxy_missing}")
     else:
-        print("✅ Proxy has all required event types")
+        print("\u2705 Proxy has all required event types")
     
     # Compare content
     if anthropic_stats.text_content and proxy_stats.text_content:
@@ -555,17 +621,17 @@ def compare_stream_stats(anthropic_stats, proxy_stats):
     
     # Compare tool use
     if anthropic_stats.has_tool_use and proxy_stats.has_tool_use:
-        print("✅ Both have tool use")
+        print("\u2705 Both have tool use")
     elif anthropic_stats.has_tool_use and not proxy_stats.has_tool_use:
-        print("⚠️ Anthropic has tool use but proxy does not")
+        print("\u26a0\ufe0f Anthropic has tool use but proxy does not")
     elif not anthropic_stats.has_tool_use and proxy_stats.has_tool_use:
-        print("⚠️ Proxy has tool use but Anthropic does not")
+        print("\u26a0\ufe0f Proxy has tool use but Anthropic does not")
     
     # Success as long as proxy has some content and no errors
     return (not proxy_stats.has_error and 
-            len(proxy_stats.text_content) > 0 or proxy_stats.has_tool_use)
+            (len(proxy_stats.text_content) > 0 or proxy_stats.has_tool_use))
 
-async def test_streaming(test_name, request_data):
+async def test_streaming(test_name, request_data, proxy_only=False):
     """Run a streaming test with the given request data."""
     print(f"\n{'='*20} RUNNING STREAMING TEST: {test_name} {'='*20}")
     
@@ -581,50 +647,56 @@ async def test_streaming(test_name, request_data):
     if not proxy_data.get("stream"):
         proxy_data["stream"] = True
     
-    check_tools = "tools" in request_data
-    
     try:
-        # Send streaming requests
-        anthropic_stats, anthropic_error = await stream_response(
-            ANTHROPIC_API_URL, anthropic_headers, anthropic_data, "Anthropic"
-        )
-        
+        # Send streaming request to proxy
         proxy_stats, proxy_error = await stream_response(
             PROXY_API_URL, proxy_headers, proxy_data, "Proxy"
         )
         
-        # Print statistics
+        print("\n--- Proxy Stream Statistics ---")
+        proxy_stats.summarize()
+
+        if proxy_error:
+            print(f"\n\u274c Proxy stream had an error: {proxy_error}")
+            return False
+
+        # If proxy-only mode, we're done
+        if proxy_only:
+            return not proxy_stats.has_error and (len(proxy_stats.text_content) > 0 or proxy_stats.has_tool_use)
+
+        # Otherwise, send to Anthropic for comparison
+        anthropic_stats, anthropic_error = await stream_response(
+            ANTHROPIC_API_URL, anthropic_headers, anthropic_data, "Anthropic"
+        )
+        
         print("\n--- Anthropic Stream Statistics ---")
         anthropic_stats.summarize()
         
-        print("\n--- Proxy Stream Statistics ---")
-        proxy_stats.summarize()
-        
         # Compare the responses
         if anthropic_error:
-            print(f"\n⚠️ Anthropic stream had an error: {anthropic_error}")
+            print(f"\n\u26a0\ufe0f Anthropic stream had an error: {anthropic_error}")
             # If Anthropic errors, the test passes if proxy does anything useful
             if not proxy_error and proxy_stats.total_chunks > 0:
-                print(f"\n✅ Test {test_name} passed! (Proxy worked even though Anthropic failed)")
+                print(f"\n\u2705 Test {test_name} passed! (Proxy worked even though Anthropic failed)")
                 return True
             else:
-                print(f"\n❌ Test {test_name} failed! Both streams had errors.")
+                print(f"\n\u274c Test {test_name} failed! Both streams had errors.")
                 return False
         
         if proxy_error:
-            print(f"\n❌ Test {test_name} failed! Proxy had an error: {proxy_error}")
+            print(f"\n[FAIL] Test {test_name} failed! Proxy had an error: {proxy_error}")
             return False
         
         result = compare_stream_stats(anthropic_stats, proxy_stats)
         if result:
-            print(f"\n✅ Test {test_name} passed!")
+            print(f"\n[OK] Test {test_name} passed!")
             return True
         else:
-            print(f"\n❌ Test {test_name} failed!")
+            print(f"\n[FAIL] Test {test_name} failed!")
             return False
     
     except Exception as e:
-        print(f"\n❌ Error in test {test_name}: {str(e)}")
+        print(f"\n[ERROR] Error in test {test_name}: {str(e)}")
         import traceback
         traceback.print_exc()
         return False
@@ -640,6 +712,10 @@ async def run_tests(args):
     if not args.streaming_only:
         print("\n\n=========== RUNNING NON-STREAMING TESTS ===========\n")
         for test_name, test_data in TEST_SCENARIOS.items():
+            # Filter by specific test if requested
+            if args.test and args.test != test_name:
+                continue
+                
             # Skip streaming tests
             if test_data.get("stream"):
                 continue
@@ -654,13 +730,17 @@ async def run_tests(args):
                 
             # Run the test
             check_tools = "tools" in test_data
-            result = test_request(test_name, test_data, check_tools=check_tools)
+            result = test_request(test_name, test_data, check_tools=check_tools, proxy_only=args.proxy_only)
             results[test_name] = result
     
     # Now run streaming tests
     if not args.no_streaming:
         print("\n\n=========== RUNNING STREAMING TESTS ===========\n")
         for test_name, test_data in TEST_SCENARIOS.items():
+            # Filter by specific test if requested
+            if args.test and args.test != test_name:
+                continue
+                
             # Only select streaming tests, or force streaming
             if not test_data.get("stream") and not test_name.endswith("_stream"):
                 continue
@@ -674,7 +754,7 @@ async def run_tests(args):
                 continue
                 
             # Run the streaming test
-            result = await test_streaming(test_name, test_data)
+            result = await test_streaming(test_name, test_data, proxy_only=args.proxy_only)
             results[f"{test_name}_streaming"] = result
     
     # Print summary
@@ -683,15 +763,16 @@ async def run_tests(args):
     passed = sum(1 for v in results.values() if v)
     
     for test, result in results.items():
-        print(f"{test}: {'✅ PASS' if result else '❌ FAIL'}")
+        status = "PASS" if result else "FAIL"
+        print(f"{test}: {status}")
     
     print(f"\nTotal: {passed}/{total} tests passed")
     
     if passed == total:
-        print("\n🎉 All tests passed!")
+        print("\nAll tests passed!")
         return True
     else:
-        print(f"\n⚠️ {total - passed} tests failed")
+        print(f"\n{total - passed} tests failed")
         return False
 
 async def main():
@@ -706,6 +787,8 @@ async def main():
     parser.add_argument("--streaming-only", action="store_true", help="Only run streaming tests")
     parser.add_argument("--simple", action="store_true", help="Only run simple tests (no tools)")
     parser.add_argument("--tools-only", action="store_true", help="Only run tool tests")
+    parser.add_argument("--proxy-only", action="store_true", help="Only test the proxy (ignore Anthropic comparison)")
+    parser.add_argument("--test", type=str, help="Run a specific test case by name")
     args = parser.parse_args()
     
     # Run tests

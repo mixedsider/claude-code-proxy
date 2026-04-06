@@ -95,10 +95,14 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
-# Get model mapping configuration from environment
-# Default to latest OpenAI models if not set
 BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
 SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+
+# Local provider configuration
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+LM_STUDIO_BASE_URL = os.environ.get("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
+OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "ollama")
+LM_STUDIO_API_KEY = os.environ.get("LM_STUDIO_API_KEY", "lm-studio")
 
 # List of OpenAI models
 OPENAI_MODELS = [
@@ -115,6 +119,9 @@ OPENAI_MODELS = [
     "gpt-4.1",  # Added default big model
     "gpt-4.1-mini" # Added default small model
 ]
+
+# List of local providers
+LOCAL_PROVIDERS = ["ollama", "lm-studio", "lm_studio"]
 
 # List of Gemini models
 GEMINI_MODELS = [
@@ -224,19 +231,36 @@ class MessagesRequest(BaseModel):
         elif 'haiku' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
-                mapped = True
+            elif PREFERRED_PROVIDER == "ollama":
+                new_model = f"ollama/{SMALL_MODEL}"
+            elif PREFERRED_PROVIDER in ["lm-studio", "lm_studio"]:
+                new_model = f"lm_studio/{SMALL_MODEL}"
             else:
                 new_model = f"openai/{SMALL_MODEL}"
-                mapped = True
+            mapped = True
 
         # Map Sonnet to BIG_MODEL based on provider preference
         elif 'sonnet' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
-                mapped = True
+            elif PREFERRED_PROVIDER == "ollama":
+                new_model = f"ollama/{BIG_MODEL}"
+            elif PREFERRED_PROVIDER in ["lm-studio", "lm_studio"]:
+                new_model = f"lm_studio/{BIG_MODEL}"
             else:
                 new_model = f"openai/{BIG_MODEL}"
-                mapped = True
+            mapped = True
+
+        # Prefix-based mapping for local providers
+        elif any(clean_v.startswith(f"{p}/") for p in LOCAL_PROVIDERS):
+             new_model = clean_v
+             mapped = True
+
+        # Mapping logic for PREFERRED_PROVIDER as local (fallback for catch-all)
+        elif PREFERRED_PROVIDER in LOCAL_PROVIDERS:
+            provider = "lm_studio" if PREFERRED_PROVIDER == "lm-studio" else PREFERRED_PROVIDER
+            new_model = f"{provider}/{clean_v}"
+            mapped = True
 
         # Add prefixes to non-mapped models if they match known lists
         elif not mapped:
@@ -1140,6 +1164,17 @@ async def create_message(
             else:
                 litellm_request["api_key"] = GEMINI_API_KEY
                 logger.debug(f"Using Gemini API key for model: {request.model}")
+        elif request.model.startswith("ollama/"):
+            litellm_request["api_base"] = OLLAMA_BASE_URL
+            litellm_request["api_key"] = OLLAMA_API_KEY
+            logger.debug(f"Using Ollama at {OLLAMA_BASE_URL} for model: {request.model}")
+        elif request.model.startswith(("lm-studio/", "lm_studio/")):
+            # LiteLLM expects 'lm_studio/' prefix
+            if request.model.startswith("lm-studio/"):
+                litellm_request["model"] = "lm_studio/" + request.model[10:]
+            litellm_request["api_base"] = LM_STUDIO_BASE_URL
+            litellm_request["api_key"] = LM_STUDIO_API_KEY
+            logger.debug(f"Using LM Studio at {LM_STUDIO_BASE_URL} for model: {request.model}")
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")
