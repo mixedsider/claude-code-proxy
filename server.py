@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, HTTPException
 import uvicorn
 import logging
 import json
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import httpx
 import os
@@ -178,7 +178,10 @@ def map_model_to_litellm(v: str) -> tuple[str, Optional[str]]:
         elif provider == "ollama":
             new_model = f"ollama/{target_model}"
         elif provider in ["lm-studio", "lm_studio"]:
-            new_model = f"lm_studio/{target_model}"
+            # 모델명에 vendor prefix(예: google/gemma-4-26b-a4b)가 포함된 경우
+            # LiteLLM이 google/ 를 Google provider로 오해하므로 슬래시 이후 부분만 사용
+            clean_target = target_model.split("/")[-1] if "/" in target_model else target_model
+            new_model = f"lm_studio/{clean_target}"
         elif provider == "openai":
             new_model = f"openai/{target_model}"
         elif provider == "anthropic":
@@ -289,19 +292,17 @@ class MessagesRequest(BaseModel):
     original_model: Optional[str] = None  # Will store the original model name
     api_base: Optional[str] = None  # Custom base URL per tier
     
-    @field_validator('model')
-    def validate_model_field(cls, v, info): # Renamed to avoid conflict
-        original_model = v
-        # Use the centralized mapping function
-        new_model, api_base = map_model_to_litellm(v)
-
-        # Store the original model in the values dictionary for logging/reference
-        values = info.data
-        if isinstance(values, dict):
-            values['original_model'] = original_model
-            values['api_base'] = api_base
-
-        return new_model
+    @model_validator(mode='after')
+    def apply_model_mapping(self):
+        original_model = self.model
+        new_model, api_base = map_model_to_litellm(original_model)
+        
+        self.original_model = original_model
+        self.model = new_model
+        if api_base:
+            self.api_base = api_base
+            
+        return self
 
 class TokenCountRequest(BaseModel):
     model: str
@@ -313,19 +314,17 @@ class TokenCountRequest(BaseModel):
     original_model: Optional[str] = None  # Will store the original model name
     api_base: Optional[str] = None  # Custom base URL per tier
     
-    @field_validator('model')
-    def validate_model_token_count(cls, v, info): # Renamed to avoid conflict
-        original_model = v
-        # Use the centralized mapping function
-        new_model, api_base = map_model_to_litellm(v)
-
-        # Store the original model in the values dictionary
-        values = info.data
-        if isinstance(values, dict):
-            values['original_model'] = original_model
-            values['api_base'] = api_base
-
-        return new_model
+    @model_validator(mode='after')
+    def apply_model_mapping(self):
+        original_model = self.model
+        new_model, api_base = map_model_to_litellm(original_model)
+        
+        self.original_model = original_model
+        self.model = new_model
+        if api_base:
+            self.api_base = api_base
+            
+        return self
 
 class TokenCountResponse(BaseModel):
     input_tokens: int
@@ -1104,9 +1103,11 @@ async def create_message(
             # LiteLLM expects 'lm_studio/' prefix
             if request.model.startswith("lm-studio/"):
                 litellm_request["model"] = "lm_studio/" + request.model[10:]
-            litellm_request["api_base"] = LM_STUDIO_BASE_URL
+            if "api_base" not in litellm_request or not litellm_request["api_base"]:
+                litellm_request["api_base"] = LM_STUDIO_BASE_URL
             litellm_request["api_key"] = LM_STUDIO_API_KEY
-            logger.debug(f"Using LM Studio at {LM_STUDIO_BASE_URL} for model: {request.model}")
+            logger.debug(f"Using LM Studio at {litellm_request.get('api_base')} for model: {request.model}")
+
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")

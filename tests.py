@@ -192,15 +192,6 @@ TEST_SCENARIOS = {
             {"role": "user", "content": "Hi! Just say 'Ollama is working' if you can hear me."}
         ]
     },
-    
-    # LM Studio test (local)
-    "lm_studio": {
-        "model": "lm_studio/local-model", # Change to your local LM studio model
-        "max_tokens": 100,
-        "messages": [
-            {"role": "user", "content": "Hi! Just say 'LM Studio is working' if you can hear me."}
-        ]
-    },
 
     # --- 3-Tier Mapping Tests (Integrated from test_all.py) ---
     "tier_big": {
