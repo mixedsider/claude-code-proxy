@@ -18,6 +18,9 @@ import sys
 # Load environment variables from .env file
 load_dotenv()
 
+# CI/Mocking configuration
+MOCK_LLM = os.environ.get("MOCK_LLM", "False").lower() == "true"
+
 # Configure logging
 logging.basicConfig(
     level=logging.WARN,  # Change to INFO level to show more details
@@ -76,6 +79,11 @@ for handler in logger.handlers:
         handler.setFormatter(ColorizedFormatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 app = FastAPI()
+
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint for CI/CD."""
+    return {"status": "ok", "mock_mode": MOCK_LLM, "timestamp": datetime.now().isoformat()}
 
 # Get API keys from environment
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
@@ -205,52 +213,6 @@ def map_model_to_litellm(v: str) -> str:
          logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
     
     return v
-
-def clean_thought_content(content: str) -> str:
-    """Removes thinking/thought blocks and extracts actual content from JSON-like responses.
-    Supports various formats like <thought>...</thought>, ● { "thought": "..." }, 
-    and also extracts 'content' from full JSON responses like {"name": "message", "content": "..."}.
-    """
-    if not content:
-        return content
-    
-    # 1. Handle HTML-like tags: <thought>...</thought> or <thinking>...</thinking>
-    content = re.sub(r'<(thought|thinking)>.*?</\1>', '', content, flags=re.DOTALL | re.IGNORECASE)
-    
-    # 2. Handle the specific Gemma/JSON-like pattern: ● { "thought": "..." }
-    content = re.sub(r'●\s*{\s*"thought":\s*".*?"\s*}', '', content, flags=re.DOTALL)
-    
-    # 3. Handle bracketed tags: [THOUGHT]...[/THOUGHT]
-    content = re.sub(r'\[THOUGHT\].*?\[/THOUGHT\]', '', content, flags=re.DOTALL | re.IGNORECASE)
-    
-    # 4. Handle just the JSON blob if it appears alone (and might have a thought field or name/content)
-    # If the response is a JSON with 'content', 'text', 'message', or 'response', extract it
-    try:
-        # Check if the string or a substring is a valid JSON
-        # We search for the first { and last } to find a potential JSON block
-        start_idx = content.find('{')
-        end_idx = content.rfind('}')
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            json_str = content[start_idx:end_idx+1]
-            data = json.loads(json_str)
-            if isinstance(data, dict):
-                # Check for common text fields in priority order
-                for key in ["content", "text", "message", "response"]:
-                    if key in data and data[key]:
-                        # If the value is a dict itself (e.g. {"text": {"content": "..."}}), recurse once
-                        if isinstance(data[key], dict):
-                            for subkey in ["content", "text"]:
-                                if subkey in data[key]:
-                                    return str(data[key][subkey]).strip()
-                        return str(data[key]).strip()
-                
-                # If there's a 'thought' field and no other text fields, it was just the thought, so discard it
-                if "thought" in data and len(data) == 1:
-                    content = content[:start_idx] + content[end_idx+1:]
-    except (json.JSONDecodeError, Exception):
-        pass
-        
-    return content.strip()
 
 # Helper function to clean schema for Gemini
 def clean_gemini_schema(schema: Any) -> Any:
@@ -719,13 +681,10 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         
         # Add text content block if present (text might be None or empty for pure tool call responses)
         if content_text is not None and content_text != "":
-            # Clean any internal thought process from the content
-            content_text = clean_thought_content(content_text)
-            if content_text:
-                content.append({"type": "text", "text": content_text})
+            content.append({"type": "text", "text": content_text})
         
-        # Add tool calls if present (tool_use in Anthropic format) - only for Claude models
-        if tool_calls and is_claude_model:
+        # Add tool calls if present (tool_use in Anthropic format)
+        if tool_calls:
             logger.debug(f"Processing tool calls: {tool_calls}")
             
             # Convert to list if it's not already
@@ -763,47 +722,6 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
                     "name": name,
                     "input": arguments
                 })
-        elif tool_calls and not is_claude_model:
-            # For non-Claude models, convert tool calls to text format
-            logger.debug(f"Converting tool calls to text for non-Claude model: {clean_model}")
-            
-            # We'll append tool info to the text content
-            tool_text = "\n\nTool usage:\n"
-            
-            # Convert to list if it's not already
-            if not isinstance(tool_calls, list):
-                tool_calls = [tool_calls]
-                
-            for idx, tool_call in enumerate(tool_calls):
-                # Extract function data based on whether it's a dict or object
-                if isinstance(tool_call, dict):
-                    function = tool_call.get("function", {})
-                    tool_id = tool_call.get("id", f"tool_{uuid.uuid4()}")
-                    name = function.get("name", "")
-                    arguments = function.get("arguments", "{}")
-                else:
-                    function = getattr(tool_call, "function", None)
-                    tool_id = getattr(tool_call, "id", f"tool_{uuid.uuid4()}")
-                    name = getattr(function, "name", "") if function else ""
-                    arguments = getattr(function, "arguments", "{}") if function else "{}"
-                
-                # Convert string arguments to dict if needed
-                if isinstance(arguments, str):
-                    try:
-                        args_dict = json.loads(arguments)
-                        arguments_str = json.dumps(args_dict, indent=2)
-                    except json.JSONDecodeError:
-                        arguments_str = arguments
-                else:
-                    arguments_str = json.dumps(arguments, indent=2)
-                
-                tool_text += f"Tool: {name}\nArguments: {arguments_str}\n\n"
-            
-            # Add or append tool text to content
-            if content and content[0]["type"] == "text":
-                content[0]["text"] += tool_text
-            else:
-                content.append({"type": "text", "text": tool_text})
         
         # Get usage information - extract values safely from object or dict
         if isinstance(usage_info, dict):
@@ -902,12 +820,12 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         output_tokens = 0
         has_sent_stop_reason = False
         last_tool_index = 0
-        full_content = "" # Raw content from model
-        emitted_content = "" # Already cleaned and sent content
         
         # Process each chunk
         async for chunk in response_generator:
             try:
+
+                
                 # Check if this is the end of the response with usage data
                 if hasattr(chunk, 'usage') and chunk.usage is not None:
                     if hasattr(chunk.usage, 'prompt_tokens'):
@@ -940,19 +858,12 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                     
                     # Accumulate text content
                     if delta_content is not None and delta_content != "":
-                        full_content += delta_content
-                        accumulated_text = full_content # For legacy tracking
-                        
-                        # 3-Tier Thought Filtering: Apply cleaning logic to full content
-                        clean_content = clean_thought_content(full_content)
-                        # Only emit the 'new' part of the clean content
-                        new_clean_text = clean_content[len(emitted_content):]
+                        accumulated_text += delta_content
                         
                         # Always emit text deltas if no tool calls started
-                        if new_clean_text and tool_index is None and not text_block_closed:
+                        if tool_index is None and not text_block_closed:
                             text_sent = True
-                            emitted_content += new_clean_text
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': new_clean_text}})}\n\n"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
                     
                     # Process tool calls
                     delta_tool_calls = None
@@ -1331,7 +1242,19 @@ async def create_message(
                     litellm_request["messages"][i]["content"] = "..." # Fallback placeholder
         
         # Only log basic info about the request, not the full details
-        logger.debug(f"Request for model: {litellm_request.get('model')}, stream: {litellm_request.get('stream', False)}")
+        logger.info(f"Model: {display_model} -> {litellm_request['model']}")
+        
+        # Handle Mock Mode for CI/Testing
+        if MOCK_LLM:
+            logger.info(f"🛠️ MOCK MODE: Skipping actual LLM call for {litellm_request['model']}")
+            return MessagesResponse(
+                id=f"mock_{uuid.uuid4()}",
+                model=litellm_request["model"],
+                role="assistant",
+                content=[ContentBlockText(type="text", text=f"Mocked response for model: {litellm_request['model']}")],
+                stop_reason="end_turn",
+                usage=Usage(input_tokens=10, output_tokens=10)
+            )
         
         # Handle streaming mode
         if request.stream:

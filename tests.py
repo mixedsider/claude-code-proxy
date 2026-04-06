@@ -186,7 +186,7 @@ TEST_SCENARIOS = {
 
     # Ollama test (local)
     "ollama": {
-        "model": "ollama/gemma4:e4b-it-q4_K_M", # Updated to use your local model
+        "model": "ollama/qwen3.5:0.8b", # Updated to use your local model
         "max_tokens": 100,
         "messages": [
             {"role": "user", "content": "Hi! Just say 'Ollama is working' if you can hear me."}
@@ -217,6 +217,28 @@ TEST_SCENARIOS = {
         "model": "claude-3-haiku-20240307",
         "max_tokens": 100,
         "messages": [{"role": "user", "content": "hi"}]
+    },
+    "tier_small_tool": {
+        "model": "claude-3-haiku-20240307",
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "user", "content": "What is 123 + 456? Use the calculator tool."}
+        ],
+        "tools": [
+            {
+                "name": "calculator",
+                "description": "A simple calculator for addition",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "a": {"type": "number"},
+                        "b": {"type": "number"}
+                    },
+                    "required": ["a", "b"]
+                }
+            }
+        ],
+        "tool_choice": {"type": "auto"}
     }
 }
 
@@ -753,10 +775,11 @@ async def run_tests(args):
             
         # Run specific tier group if --tiers is set
         if args.tiers:
-            tier_tests = ["tier_big", "tier_middle", "tier_small"]
+            tier_tests = ["tier_big", "tier_middle", "tier_small", "tier_small_tool"]
             for t_name in tier_tests:
                 if t_name in TEST_SCENARIOS and t_name not in results:
-                    result = test_request(t_name, TEST_SCENARIOS[t_name], proxy_only=args.proxy_only)
+                    check_tools = "tools" in TEST_SCENARIOS[t_name]
+                    result = test_request(t_name, TEST_SCENARIOS[t_name], check_tools=check_tools, proxy_only=args.proxy_only)
                     results[t_name] = result
     
     # Now run streaming tests
