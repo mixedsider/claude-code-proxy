@@ -1113,8 +1113,8 @@ async def create_message(
             logger.debug(f"Using Anthropic API key for model: {request.model}")
         
         # For OpenAI models - modify request format to work with limitations
-        if "openai" in litellm_request["model"] and "messages" in litellm_request:
-            logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
+        if any(prefix in litellm_request["model"] for prefix in ["openai", "lm_studio", "ollama"]) and "messages" in litellm_request:
+            logger.debug(f"Processing model request for content flattening: {litellm_request['model']}")
             
             # For OpenAI models, we need to convert content blocks to simple strings
             # and handle other requirements
