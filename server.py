@@ -207,8 +207,9 @@ def map_model_to_litellm(v: str) -> str:
     return v
 
 def clean_thought_content(content: str) -> str:
-    """Removes thinking/thought blocks from the model output.
-    Supports various formats like <thought>...</thought>, ● { "thought": "..." }, [THOUGHT]...[/THOUGHT], etc.
+    """Removes thinking/thought blocks and extracts actual content from JSON-like responses.
+    Supports various formats like <thought>...</thought>, ● { "thought": "..." }, 
+    and also extracts 'content' from full JSON responses like {"name": "message", "content": "..."}.
     """
     if not content:
         return content
@@ -217,15 +218,31 @@ def clean_thought_content(content: str) -> str:
     content = re.sub(r'<(thought|thinking)>.*?</\1>', '', content, flags=re.DOTALL | re.IGNORECASE)
     
     # 2. Handle the specific Gemma/JSON-like pattern: ● { "thought": "..." }
-    # This pattern often has a bullet point and then a JSON block
     content = re.sub(r'●\s*{\s*"thought":\s*".*?"\s*}', '', content, flags=re.DOTALL)
     
     # 3. Handle bracketed tags: [THOUGHT]...[/THOUGHT]
     content = re.sub(r'\[THOUGHT\].*?\[/THOUGHT\]', '', content, flags=re.DOTALL | re.IGNORECASE)
     
-    # 4. Handle just the JSON blob if it appears alone
-    content = re.sub(r'{\s*"thought":\s*".*?"\s*}', '', content, flags=re.DOTALL)
-    
+    # 4. Handle just the JSON blob if it appears alone (and might have a thought field or name/content)
+    # If the response is a JSON with 'content', extract it
+    try:
+        # Check if the string or a substring is a valid JSON with a 'content' field
+        # We search for the first { and last } to find a potential JSON block
+        start_idx = content.find('{')
+        end_idx = content.rfind('}')
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = content[start_idx:end_idx+1]
+            data = json.loads(json_str)
+            if isinstance(data, dict):
+                # If there's a 'content' field, we prefer it as the primary response
+                if "content" in data:
+                    return str(data["content"]).strip()
+                # If there's a 'thought' field, it was just the thought, so discard it
+                if "thought" in data and len(data) == 1:
+                    content = content[:start_idx] + content[end_idx+1:]
+    except (json.JSONDecodeError, Exception):
+        pass
+        
     return content.strip()
 
 # Helper function to clean schema for Gemini
