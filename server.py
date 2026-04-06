@@ -98,12 +98,15 @@ PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 # Tiered Model Configuration
 BIG_MODEL = os.environ.get("BIG_MODEL", "gemini-2.5-pro")
 BIG_MODEL_PROVIDER = os.environ.get("BIG_MODEL_PROVIDER", PREFERRED_PROVIDER).lower()
+BIG_MODEL_BASE_URL = os.environ.get("BIG_MODEL_BASE_URL")
 
 MIDDLE_MODEL = os.environ.get("MIDDLE_MODEL", "gemma-4-31b-it")
 MIDDLE_MODEL_PROVIDER = os.environ.get("MIDDLE_MODEL_PROVIDER", "lm-studio").lower()
+MIDDLE_MODEL_BASE_URL = os.environ.get("MIDDLE_MODEL_BASE_URL")
 
 SMALL_MODEL = os.environ.get("SMALL_MODEL", "gemma4:e4b-it-q4_K_M")
 SMALL_MODEL_PROVIDER = os.environ.get("SMALL_MODEL_PROVIDER", PREFERRED_PROVIDER).lower()
+SMALL_MODEL_BASE_URL = os.environ.get("SMALL_MODEL_BASE_URL")
 
 # Local provider configuration
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -136,10 +139,11 @@ GEMINI_MODELS = [
     "gemini-2.5-pro"
 ]
 
-def map_model_to_litellm(v: str) -> str:
+def map_model_to_litellm(v: str) -> tuple[str, Optional[str]]:
     """Helper function to map requested model name to LiteLLM format based on tier configuration."""
     original_model = v
     new_model = v # Default to original value
+    api_base = None
 
     # Remove provider prefixes for easier matching
     clean_v = v.lower()
@@ -157,12 +161,15 @@ def map_model_to_litellm(v: str) -> str:
     if 'opus' in clean_v:
         target_model = BIG_MODEL
         provider = BIG_MODEL_PROVIDER
+        api_base = BIG_MODEL_BASE_URL
     elif 'sonnet' in clean_v:
         target_model = MIDDLE_MODEL
         provider = MIDDLE_MODEL_PROVIDER
+        api_base = MIDDLE_MODEL_BASE_URL
     elif 'haiku' in clean_v:
         target_model = SMALL_MODEL
         provider = SMALL_MODEL_PROVIDER
+        api_base = SMALL_MODEL_BASE_URL
     
     if target_model and provider:
         # Handle specific provider formatting
@@ -179,32 +186,32 @@ def map_model_to_litellm(v: str) -> str:
         else:
             new_model = target_model # Fallback to model name as is
             
-        logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}' (Tier-based)")
-        return new_model
+        logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}' (Tier-based) [api_base={api_base}]")
+        return new_model, api_base
 
     # Mapping logic for direct provider prefix
     if any(clean_v.startswith(f"{p}/") for p in LOCAL_PROVIDERS):
-         return v
+         return v, None
 
     # Fallback mapping based on PREFERRED_PROVIDER
     if PREFERRED_PROVIDER == "anthropic":
-        return f"anthropic/{clean_v}"
+        return f"anthropic/{clean_v}", None
         
     if PREFERRED_PROVIDER in LOCAL_PROVIDERS:
         local_p = "lm_studio" if PREFERRED_PROVIDER == "lm-studio" else PREFERRED_PROVIDER
-        return f"{local_p}/{clean_v}"
+        return f"{local_p}/{clean_v}", None
 
     # Add prefixes to non-mapped models if they match known lists
     if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
-        return f"gemini/{clean_v}"
+        return f"gemini/{clean_v}", None
     if clean_v in OPENAI_MODELS and not v.startswith('openai/'):
-        return f"openai/{clean_v}"
+        return f"openai/{clean_v}", None
 
     # No mapping rule applied, return original
     if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
          logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
     
-    return v
+    return v, None
 
 # Helper function to clean schema for Gemini
 def clean_gemini_schema(schema: Any) -> Any:
@@ -280,17 +287,19 @@ class MessagesRequest(BaseModel):
     tool_choice: Optional[Dict[str, Any]] = None
     thinking: Optional[ThinkingConfig] = None
     original_model: Optional[str] = None  # Will store the original model name
+    api_base: Optional[str] = None  # Custom base URL per tier
     
     @field_validator('model')
     def validate_model_field(cls, v, info): # Renamed to avoid conflict
         original_model = v
         # Use the centralized mapping function
-        new_model = map_model_to_litellm(v)
+        new_model, api_base = map_model_to_litellm(v)
 
         # Store the original model in the values dictionary for logging/reference
         values = info.data
         if isinstance(values, dict):
             values['original_model'] = original_model
+            values['api_base'] = api_base
 
         return new_model
 
@@ -302,17 +311,19 @@ class TokenCountRequest(BaseModel):
     thinking: Optional[ThinkingConfig] = None
     tool_choice: Optional[Dict[str, Any]] = None
     original_model: Optional[str] = None  # Will store the original model name
+    api_base: Optional[str] = None  # Custom base URL per tier
     
     @field_validator('model')
     def validate_model_token_count(cls, v, info): # Renamed to avoid conflict
         original_model = v
         # Use the centralized mapping function
-        new_model = map_model_to_litellm(v)
+        new_model, api_base = map_model_to_litellm(v)
 
         # Store the original model in the values dictionary
         values = info.data
         if isinstance(values, dict):
             values['original_model'] = original_model
+            values['api_base'] = api_base
 
         return new_model
 
@@ -541,6 +552,11 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         "temperature": anthropic_request.temperature,
         "stream": anthropic_request.stream,
     }
+
+    # Include custom base url if configured for the tier
+    if anthropic_request.api_base:
+        litellm_request["api_base"] = anthropic_request.api_base
+        logger.debug(f"Applying custom api_base to LiteLLM request: {anthropic_request.api_base}")
 
     # Only include thinking field for Anthropic models
     if anthropic_request.thinking and anthropic_request.model.startswith("anthropic/"):
