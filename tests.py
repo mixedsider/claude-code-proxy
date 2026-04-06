@@ -200,6 +200,23 @@ TEST_SCENARIOS = {
         "messages": [
             {"role": "user", "content": "Hi! Just say 'LM Studio is working' if you can hear me."}
         ]
+    },
+
+    # --- 3-Tier Mapping Tests (Integrated from test_all.py) ---
+    "tier_big": {
+        "model": "claude-3-opus-20240229",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "hi"}]
+    },
+    "tier_middle": {
+        "model": "claude-3-sonnet-20240229",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "hi"}]
+    },
+    "tier_small": {
+        "model": "claude-3-haiku-20240307",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "hi"}]
     }
 }
 
@@ -235,6 +252,7 @@ def verify_proxy_response(proxy_response, check_tools=False):
     
     print("\n--- Proxy Response Structure ---")
     print(json.dumps({k: v for k, v in proxy_json.items() if k != "content"}, indent=2))
+    print(f"Mapped Model: {proxy_json.get('model')}")
     
     # Basic structure verification
     assert proxy_json.get("role") == "assistant", "Proxy role is not 'assistant'"
@@ -732,6 +750,14 @@ async def run_tests(args):
             check_tools = "tools" in test_data
             result = test_request(test_name, test_data, check_tools=check_tools, proxy_only=args.proxy_only)
             results[test_name] = result
+            
+        # Run specific tier group if --tiers is set
+        if args.tiers:
+            tier_tests = ["tier_big", "tier_middle", "tier_small"]
+            for t_name in tier_tests:
+                if t_name in TEST_SCENARIOS and t_name not in results:
+                    result = test_request(t_name, TEST_SCENARIOS[t_name], proxy_only=args.proxy_only)
+                    results[t_name] = result
     
     # Now run streaming tests
     if not args.no_streaming:
@@ -789,6 +815,7 @@ async def main():
     parser.add_argument("--tools-only", action="store_true", help="Only run tool tests")
     parser.add_argument("--proxy-only", action="store_true", help="Only test the proxy (ignore Anthropic comparison)")
     parser.add_argument("--test", type=str, help="Run a specific test case by name")
+    parser.add_argument("--tiers", action="store_true", help="Run all 3-tier mapping tests (Big, Middle, Small)")
     args = parser.parse_args()
     
     # Run tests

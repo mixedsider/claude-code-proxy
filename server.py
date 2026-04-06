@@ -95,8 +95,15 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+# Tiered Model Configuration
+BIG_MODEL = os.environ.get("BIG_MODEL", "gemini-2.5-pro")
+BIG_MODEL_PROVIDER = os.environ.get("BIG_MODEL_PROVIDER", PREFERRED_PROVIDER).lower()
+
+MIDDLE_MODEL = os.environ.get("MIDDLE_MODEL", "gemma-4-31b-it")
+MIDDLE_MODEL_PROVIDER = os.environ.get("MIDDLE_MODEL_PROVIDER", "lm-studio").lower()
+
+SMALL_MODEL = os.environ.get("SMALL_MODEL", "gemma4:e4b-it-q4_K_M")
+SMALL_MODEL_PROVIDER = os.environ.get("SMALL_MODEL_PROVIDER", PREFERRED_PROVIDER).lower()
 
 # Local provider configuration
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -128,6 +135,76 @@ GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-pro"
 ]
+
+def map_model_to_litellm(v: str) -> str:
+    """Helper function to map requested model name to LiteLLM format based on tier configuration."""
+    original_model = v
+    new_model = v # Default to original value
+
+    # Remove provider prefixes for easier matching
+    clean_v = v.lower()
+    if clean_v.startswith('anthropic/'):
+        clean_v = clean_v[10:]
+    elif clean_v.startswith('openai/'):
+        clean_v = clean_v[7:]
+    elif clean_v.startswith('gemini/'):
+        clean_v = clean_v[7:]
+
+    # Mapping Logic based on tiers
+    target_model = None
+    provider = None
+
+    if 'opus' in clean_v:
+        target_model = BIG_MODEL
+        provider = BIG_MODEL_PROVIDER
+    elif 'sonnet' in clean_v:
+        target_model = MIDDLE_MODEL
+        provider = MIDDLE_MODEL_PROVIDER
+    elif 'haiku' in clean_v:
+        target_model = SMALL_MODEL
+        provider = SMALL_MODEL_PROVIDER
+    
+    if target_model and provider:
+        # Handle specific provider formatting
+        if provider == "google":
+            new_model = f"gemini/{target_model}"
+        elif provider == "ollama":
+            new_model = f"ollama/{target_model}"
+        elif provider in ["lm-studio", "lm_studio"]:
+            new_model = f"lm_studio/{target_model}"
+        elif provider == "openai":
+            new_model = f"openai/{target_model}"
+        elif provider == "anthropic":
+            new_model = f"anthropic/{target_model}"
+        else:
+            new_model = target_model # Fallback to model name as is
+            
+        logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}' (Tier-based)")
+        return new_model
+
+    # Mapping logic for direct provider prefix
+    if any(clean_v.startswith(f"{p}/") for p in LOCAL_PROVIDERS):
+         return v
+
+    # Fallback mapping based on PREFERRED_PROVIDER
+    if PREFERRED_PROVIDER == "anthropic":
+        return f"anthropic/{clean_v}"
+        
+    if PREFERRED_PROVIDER in LOCAL_PROVIDERS:
+        local_p = "lm_studio" if PREFERRED_PROVIDER == "lm-studio" else PREFERRED_PROVIDER
+        return f"{local_p}/{clean_v}"
+
+    # Add prefixes to non-mapped models if they match known lists
+    if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
+        return f"gemini/{clean_v}"
+    if clean_v in OPENAI_MODELS and not v.startswith('openai/'):
+        return f"openai/{clean_v}"
+
+    # No mapping rule applied, return original
+    if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
+         logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
+    
+    return v
 
 # Helper function to clean schema for Gemini
 def clean_gemini_schema(schema: Any) -> Any:
@@ -207,80 +284,10 @@ class MessagesRequest(BaseModel):
     @field_validator('model')
     def validate_model_field(cls, v, info): # Renamed to avoid conflict
         original_model = v
-        new_model = v # Default to original value
+        # Use the centralized mapping function
+        new_model = map_model_to_litellm(v)
 
-        logger.debug(f"📋 MODEL VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
-
-        # Remove provider prefixes for easier matching
-        clean_v = v
-        if clean_v.startswith('anthropic/'):
-            clean_v = clean_v[10:]
-        elif clean_v.startswith('openai/'):
-            clean_v = clean_v[7:]
-        elif clean_v.startswith('gemini/'):
-            clean_v = clean_v[7:]
-
-        # --- Mapping Logic --- START ---
-        mapped = False
-        if PREFERRED_PROVIDER == "anthropic":
-            # Don't remap to big/small models, just add the prefix
-            new_model = f"anthropic/{clean_v}"
-            mapped = True
-
-        # Map Haiku to SMALL_MODEL based on provider preference
-        elif 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
-                new_model = f"gemini/{SMALL_MODEL}"
-            elif PREFERRED_PROVIDER == "ollama":
-                new_model = f"ollama/{SMALL_MODEL}"
-            elif PREFERRED_PROVIDER in ["lm-studio", "lm_studio"]:
-                new_model = f"lm_studio/{SMALL_MODEL}"
-            else:
-                new_model = f"openai/{SMALL_MODEL}"
-            mapped = True
-
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
-                new_model = f"gemini/{BIG_MODEL}"
-            elif PREFERRED_PROVIDER == "ollama":
-                new_model = f"ollama/{BIG_MODEL}"
-            elif PREFERRED_PROVIDER in ["lm-studio", "lm_studio"]:
-                new_model = f"lm_studio/{BIG_MODEL}"
-            else:
-                new_model = f"openai/{BIG_MODEL}"
-            mapped = True
-
-        # Prefix-based mapping for local providers
-        elif any(clean_v.startswith(f"{p}/") for p in LOCAL_PROVIDERS):
-             new_model = clean_v
-             mapped = True
-
-        # Mapping logic for PREFERRED_PROVIDER as local (fallback for catch-all)
-        elif PREFERRED_PROVIDER in LOCAL_PROVIDERS:
-            provider = "lm_studio" if PREFERRED_PROVIDER == "lm-studio" else PREFERRED_PROVIDER
-            new_model = f"{provider}/{clean_v}"
-            mapped = True
-
-        # Add prefixes to non-mapped models if they match known lists
-        elif not mapped:
-            if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
-                new_model = f"gemini/{clean_v}"
-                mapped = True # Technically mapped to add prefix
-            elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
-                new_model = f"openai/{clean_v}"
-                mapped = True # Technically mapped to add prefix
-        # --- Mapping Logic --- END ---
-
-        if mapped:
-            logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
-        else:
-             # If no mapping occurred and no prefix exists, log warning or decide default
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
-                 logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
-             new_model = v # Ensure we return the original if no rule applied
-
-        # Store the original model in the values dictionary
+        # Store the original model in the values dictionary for logging/reference
         values = info.data
         if isinstance(values, dict):
             values['original_model'] = original_model
@@ -298,59 +305,9 @@ class TokenCountRequest(BaseModel):
     
     @field_validator('model')
     def validate_model_token_count(cls, v, info): # Renamed to avoid conflict
-        # Use the same logic as MessagesRequest validator
-        # NOTE: Pydantic validators might not share state easily if not class methods
-        # Re-implementing the logic here for clarity, could be refactored
         original_model = v
-        new_model = v # Default to original value
-
-        logger.debug(f"📋 TOKEN COUNT VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
-
-        # Remove provider prefixes for easier matching
-        clean_v = v
-        if clean_v.startswith('anthropic/'):
-            clean_v = clean_v[10:]
-        elif clean_v.startswith('openai/'):
-            clean_v = clean_v[7:]
-        elif clean_v.startswith('gemini/'):
-            clean_v = clean_v[7:]
-
-        # --- Mapping Logic --- START ---
-        mapped = False
-        # Map Haiku to SMALL_MODEL based on provider preference
-        if 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
-                new_model = f"gemini/{SMALL_MODEL}"
-                mapped = True
-            else:
-                new_model = f"openai/{SMALL_MODEL}"
-                mapped = True
-
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
-                new_model = f"gemini/{BIG_MODEL}"
-                mapped = True
-            else:
-                new_model = f"openai/{BIG_MODEL}"
-                mapped = True
-
-        # Add prefixes to non-mapped models if they match known lists
-        elif not mapped:
-            if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
-                new_model = f"gemini/{clean_v}"
-                mapped = True # Technically mapped to add prefix
-            elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
-                new_model = f"openai/{clean_v}"
-                mapped = True # Technically mapped to add prefix
-        # --- Mapping Logic --- END ---
-
-        if mapped:
-            logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
-        else:
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
-                 logger.warning(f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is.")
-             new_model = v # Ensure we return the original if no rule applied
+        # Use the centralized mapping function
+        new_model = map_model_to_litellm(v)
 
         # Store the original model in the values dictionary
         values = info.data
