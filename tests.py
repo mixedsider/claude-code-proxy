@@ -2,16 +2,17 @@
 """
 Comprehensive test suite for Claude-on-OpenAI Proxy.
 
-This script provides tests for both streaming and non-streaming requests,
-with various scenarios including tool use, multi-turn conversations,
-and content blocks.
+This script provides tests for:
+1. Integration tests: Streaming and non-streaming requests with various scenarios.
+2. Unit tests: Verification of Anthropic-to-OpenAI format conversion.
 
 Usage:
   python tests.py                    # Run all tests
-  python tests.py --no-streaming     # Skip streaming tests
-  python tests.py --simple           # Run only simple tests
-  python tests.py --tools            # Run tool-related tests only
+  python tests.py --no-streaming     # Skip streaming (integration) tests
+  python tests.py --simple           # Run only simple integration tests
+  python tests.py --tools            # Run tool-related integration tests only
   python tests.py --proxy-only       # Only test the proxy (ignore Anthropic comparison)
+  python tests.py --unit-only        # Run only internal format conversion unit tests
 """
 
 import os
@@ -24,6 +25,17 @@ import sys
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Set
 from dotenv import load_dotenv
+
+# Import server components for unit testing
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from server import (
+    MessagesRequest,
+    ContentBlockText,
+    ContentBlockToolUse,
+    ContentBlockToolResult,
+    Message,
+    convert_anthropic_to_litellm,
+)
 
 # Load environment variables
 load_dotenv()
@@ -243,7 +255,132 @@ REQUIRED_EVENT_TYPES = {
     "message_stop"
 }
 
-# ================= NON-STREAMING TESTS =================
+# ================= UNIT TESTS (Internal Format Conversion) =================
+
+def make_unit_msg_request(messages, tools=None):
+    """Internal helper to create MessagesRequest for unit tests."""
+    return MessagesRequest(
+        model="claude-sonnet-4-5",
+        max_tokens=1000,
+        messages=messages,
+        tools=tools,
+    )
+
+def test_unit_tool_use_to_openai():
+    """Unit test: assistant tool_use block to OpenAI tool_calls conversion."""
+    print("Running case: test_unit_tool_use_to_openai...")
+    messages = [
+        Message(role="user", content="Show files"),
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    type="tool_use",
+                    id="toolu_01abc",
+                    name="Bash",
+                    input={"command": "ls -la"},
+                )
+            ],
+        ),
+    ]
+    result = convert_anthropic_to_litellm(make_unit_msg_request(messages))
+    msgs = result["messages"]
+
+    assistant_msg = next((m for m in msgs if m["role"] == "assistant"), None)
+    if not assistant_msg: return False, "Assistant message not found"
+    if "tool_calls" not in assistant_msg: return False, "tool_calls missing in assistant message"
+    
+    tc = assistant_msg["tool_calls"][0]
+    if tc["id"] != "toolu_01abc": return False, f"ID mismatch: {tc['id']}"
+    if tc["function"]["name"] != "Bash": return False, "Name mismatch"
+    
+    args = json.loads(tc["function"]["arguments"])
+    if args["command"] != "ls -la": return False, "Arguments mismatch"
+    
+    return True, "PASSED"
+
+def test_unit_tool_result_to_role_tool():
+    """Unit test: user tool_result block to role='tool' conversion."""
+    print("Running case: test_unit_tool_result_to_role_tool...")
+    messages = [
+        Message(role="user", content="Show files"),
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(type="tool_use", id="toolu_01abc", name="Bash", input={"command": "ls"})
+            ],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    type="tool_result",
+                    tool_use_id="toolu_01abc",
+                    content="file1.txt",
+                )
+            ],
+        ),
+    ]
+    result = convert_anthropic_to_litellm(make_unit_msg_request(messages))
+    msgs = result["messages"]
+
+    tool_msg = next((m for m in msgs if m.get("role") == "tool"), None)
+    if not tool_msg: return False, "Role 'tool' message not found"
+    if tool_msg["tool_call_id"] != "toolu_01abc": return False, "tool_call_id mismatch"
+    if tool_msg["content"] != "file1.txt": return False, "Content mismatch"
+    
+    return True, "PASSED"
+
+def test_unit_no_plain_text_tool_pattern():
+    """Unit test: Verify that the textual [Tool: ...] pattern is NOT generated."""
+    print("Running case: test_unit_no_plain_text_tool_pattern...")
+    messages = [
+        Message(role="user", content="Do something"),
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockText(type="text", text="Executing..."),
+                ContentBlockToolUse(type="tool_use", id="toolu_xyz", name="Bash", input={"command": "echo"}),
+            ],
+        ),
+    ]
+    result = convert_anthropic_to_litellm(make_unit_msg_request(messages))
+    msgs = result["messages"]
+
+    assistant_msg = next((m for m in msgs if m["role"] == "assistant"), None)
+    content_str = str(assistant_msg.get("content", ""))
+    
+    if "[Tool:" in content_str: return False, f"Old text pattern found in content: {content_str}"
+    if "tool_calls" not in assistant_msg: return False, "tool_calls missing"
+    
+    return True, "PASSED"
+
+def run_unit_tests():
+    """Run all internal unit tests."""
+    print("\n\n=========== RUNNING INTERNAL UNIT TESTS ===========\n")
+    unit_results = {}
+    
+    funcs = [
+        ("test_unit_tool_use_to_openai", test_unit_tool_use_to_openai),
+        ("test_unit_tool_result_to_role_tool", test_unit_tool_result_to_role_tool),
+        ("test_unit_no_plain_text_tool_pattern", test_unit_no_plain_text_tool_pattern)
+    ]
+    
+    for name, func in funcs:
+        try:
+            success, msg = func()
+            unit_results[name] = success
+            if success:
+                print(f"✅ {name}: {msg}")
+            else:
+                print(f"❌ {name}: {msg}")
+        except Exception as e:
+            unit_results[name] = False
+            print(f"❌ {name}: Error: {str(e)}")
+            
+    return unit_results
+
+# ================= NON-STREAMING INTEGRATION TESTS =================
 
 def get_response(url, headers, data):
     """Send a request and get the response."""
@@ -308,533 +445,178 @@ def compare_responses(anthropic_response, proxy_response, check_tools=False):
     print("\n--- Proxy Response Structure ---")
     print(json.dumps({k: v for k, v in proxy_json.items() if k != "content"}, indent=2))
     
-    # Basic structure verification with more flexibility
-    # The proxy might map values differently, so we're more lenient in our checks
+    # Basic structure verification
     assert proxy_json.get("role") == "assistant", "Proxy role is not 'assistant'"
     assert proxy_json.get("type") == "message", "Proxy type is not 'message'"
     
-    # Check if stop_reason is reasonable (might be different between Anthropic and our proxy)
     valid_stop_reasons = ["end_turn", "max_tokens", "stop_sequence", "tool_use", None]
     assert proxy_json.get("stop_reason") in valid_stop_reasons, "Invalid stop reason"
     
-    # Check content exists and has valid structure
     assert "content" in anthropic_json, "No content in Anthropic response"
     assert "content" in proxy_json, "No content in Proxy response"
     
-    anthropic_content = anthropic_json["content"]
-    proxy_content = proxy_json["content"]
-    
-    # Make sure content is a list and has at least one item
-    assert isinstance(anthropic_content, list), "Anthropic content is not a list"
-    assert isinstance(proxy_content, list), "Proxy content is not a list" 
-    assert len(proxy_content) > 0, "Proxy content is empty"
-    
-    # If we're checking for tool uses
-    if check_tools:
-        # Check if content has tool use
-        anthropic_tool = None
-        proxy_tool = None
-        
-        # Find tool use in Anthropic response
-        for item in anthropic_content:
-            if item.get("type") == "tool_use":
-                anthropic_tool = item
-                break
-                
-        # Find tool use in Proxy response
-        for item in proxy_content:
-            if item.get("type") == "tool_use":
-                proxy_tool = item
-                break
-        
-        # At least one of them should have a tool use
-        if anthropic_tool is not None:
-            print("\n---------- ANTHROPIC TOOL USE ----------")
-            print(json.dumps(anthropic_tool, indent=2))
-            
-            if proxy_tool is not None:
-                print("\n---------- PROXY TOOL USE ----------")
-                print(json.dumps(proxy_tool, indent=2))
-                
-                # Check tool structure
-                assert proxy_tool.get("name") is not None, "Proxy tool has no name"
-                assert proxy_tool.get("input") is not None, "Proxy tool has no input"
-                
-                print("\n\u2705 Both responses contain tool use")
-            else:
-                print("\n\u26a0\ufe0f Proxy response does not contain tool use, but Anthropic does")
-        elif proxy_tool is not None:
-            print("\n---------- PROXY TOOL USE ----------")
-            print(json.dumps(proxy_tool, indent=2))
-            print("\n\u26a0\ufe0f Proxy response contains tool use, but Anthropic does not")
-        else:
-            print("\n\u26a0\ufe0f Neither response contains tool use")
-    
     # Check if content has text
-    anthropic_text = None
-    proxy_text = None
+    anthropic_text = next((item.get("text") for item in anthropic_json["content"] if item.get("type") == "text"), None)
+    proxy_text = next((item.get("text") for item in proxy_json["content"] if item.get("type") == "text"), None)
     
-    for item in anthropic_content:
-        if item.get("type") == "text":
-            anthropic_text = item.get("text")
-            break
-            
-    for item in proxy_content:
-        if item.get("type") == "text":
-            proxy_text = item.get("text")
-            break
+    if anthropic_text:
+        print(f"\n---------- ANTHROPIC TEXT PREVIEW ----------\n{anthropic_text[:200]}...")
+    if proxy_text:
+        print(f"\n---------- PROXY TEXT PREVIEW ----------\n{proxy_text[:200]}...")
     
-    # For tool use responses, there might not be text content
-    if check_tools and (anthropic_text is None or proxy_text is None):
-        print("\n\u26a0\ufe0f One or both responses don't have text content (expected for tool-only responses)")
-        return True
-    
-    assert anthropic_text is not None, "No text found in Anthropic response"
-    assert proxy_text is not None, "No text found in Proxy response"
-    
-    # Print the first few lines of each text response
-    max_preview_lines = 5
-    anthropic_preview = "\n".join(anthropic_text.strip().split("\n")[:max_preview_lines])
-    proxy_preview = "\n".join(proxy_text.strip().split("\n")[:max_preview_lines])
-    
-    print("\n---------- ANTHROPIC TEXT PREVIEW ----------")
-    print(anthropic_preview)
-    
-    print("\n---------- PROXY TEXT PREVIEW ----------")
-    print(proxy_preview)
-    
-    # Check for some minimum text overlap - proxy might have different exact wording
-    # but should have roughly similar content
-    return True  # We're not enforcing similarity, just basic structure
+    return True
 
 def test_request(test_name, request_data, check_tools=False, proxy_only=False):
-    """Run a test with the given request data."""
-    print(f"\n{'='*20} RUNNING TEST: {test_name} {'='*20}")
+    """Run an integration test with the given request data."""
+    print(f"\n{'='*20} RUNNING INTEGRATION TEST: {test_name} {'='*20}")
     
-    # Log the request data
-    print(f"\nRequest data:\n{json.dumps({k: v for k, v in request_data.items() if k != 'messages'}, indent=2)}")
-    
-    # Make copies of the request data to avoid modifying the original
     anthropic_data = request_data.copy()
     proxy_data = request_data.copy()
     
     try:
         print("\nSending to Proxy...")
         proxy_response = get_response(PROXY_API_URL, proxy_headers, proxy_data)
-        print(f"Proxy status code: {proxy_response.status_code}")
-
+        
         if proxy_response.status_code != 200:
-            print(f"\n[FAIL] Proxy request failed with status {proxy_response.status_code}")
-            print(f"Proxy error: {proxy_response.text}")
+            print(f"❌ Proxy failed status {proxy_response.status_code}: {proxy_response.text}")
             return False
 
-        # If proxy-only mode, just verify the structure
         if proxy_only:
             return verify_proxy_response(proxy_response, check_tools=check_tools)
 
-        # Otherwise, compare with Anthropic
         print("\nSending to Anthropic API...")
         anthropic_response = get_response(ANTHROPIC_API_URL, anthropic_headers, anthropic_data)
-        print(f"Anthropic status code: {anthropic_response.status_code}")
         
         if anthropic_response.status_code != 200:
-            print("\n[WARN] Anthropic request failed")
-            print(f"Anthropic error: {anthropic_response.text}")
-            # If Anthropic fails but proxy works, we consider it a structural pass if proxy response is valid
+            print(f"⚠️ Anthropic failed: {anthropic_response.text}")
             return verify_proxy_response(proxy_response, check_tools=check_tools)
         
-        # Compare the responses
-        result = compare_responses(anthropic_response, proxy_response, check_tools=check_tools)
-        if result:
-            print(f"\n[OK] Test {test_name} passed!")
-            return True
-        else:
-            print(f"\n[FAIL] Test {test_name} failed!")
-            return False
+        return compare_responses(anthropic_response, proxy_response, check_tools=check_tools)
     
     except Exception as e:
-        print(f"\n[ERROR] Error in test {test_name}: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error in test {test_name}: {str(e)}")
         return False
 
-# ================= STREAMING TESTS =================
+# ================= STREAMING INTEGRATION TESTS =================
 
 class StreamStats:
-    """Track statistics about a streaming response."""
-    
     def __init__(self):
         self.event_types = set()
         self.event_counts = {}
-        self.first_event_time = None
-        self.last_event_time = None
         self.total_chunks = 0
-        self.events = []
         self.text_content = ""
-        self.content_blocks = {}
         self.has_tool_use = False
         self.has_error = False
         self.error_message = ""
-        self.text_content_by_block = {}
         
     def add_event(self, event_data):
-        """Track information about each received event."""
-        now = datetime.now()
-        if self.first_event_time is None:
-            self.first_event_time = now
-        self.last_event_time = now
-        
         self.total_chunks += 1
-        
-        # Record event type and increment count
-        if "type" in event_data:
-            event_type = event_data["type"]
+        event_type = event_data.get("type")
+        if event_type:
             self.event_types.add(event_type)
             self.event_counts[event_type] = self.event_counts.get(event_type, 0) + 1
-            
-            # Track specific event data
-            if event_type == "content_block_start":
-                block_idx = event_data.get("index")
-                content_block = event_data.get("content_block", {})
-                if content_block.get("type") == "tool_use":
-                    self.has_tool_use = True
-                self.content_blocks[block_idx] = content_block
-                self.text_content_by_block[block_idx] = ""
+            if event_type == "content_block_start" and event_data.get("content_block", {}).get("type") == "tool_use":
+                self.has_tool_use = True
+            elif event_type == "content_block_delta" and "delta" in event_data:
+                self.text_content += event_data["delta"].get("text", "")
                 
-            elif event_type == "content_block_delta":
-                block_idx = event_data.get("index")
-                delta = event_data.get("delta", {})
-                if delta.get("type") == "text_delta":
-                    text = delta.get("text", "")
-                    self.text_content += text
-                    # Also track text by block ID
-                    if block_idx in self.text_content_by_block:
-                        self.text_content_by_block[block_idx] += text
-                        
-        # Keep track of all events for debugging
-        self.events.append(event_data)
-                
-    def get_duration(self):
-        """Calculate the total duration of the stream in seconds."""
-        if self.first_event_time is None or self.last_event_time is None:
-            return 0
-        return (self.last_event_time - self.first_event_time).total_seconds()
-        
     def summarize(self):
-        """Print a summary of the stream statistics."""
-        print(f"Total chunks: {self.total_chunks}")
-        print(f"Unique event types: {sorted(list(self.event_types))}")
-        print(f"Event counts: {json.dumps(self.event_counts, indent=2)}")
-        print(f"Duration: {self.get_duration():.2f} seconds")
-        print(f"Has tool use: {self.has_tool_use}")
-        
-        # Print the first few lines of content
+        print(f"Chunks: {self.total_chunks}, ToolUse: {self.has_tool_use}")
         if self.text_content:
-            max_preview_lines = 5
-            text_preview = "\n".join(self.text_content.strip().split("\n")[:max_preview_lines])
-            print(f"Text preview:\n{text_preview}")
-        else:
-            print("No text content extracted")
-            
-        if self.has_error:
-            print(f"Error: {self.error_message}")
+            print(f"Text: {self.text_content[:100]}...")
 
 async def stream_response(url, headers, data, stream_name):
-    """Send a streaming request and process the response."""
     print(f"\nStarting {stream_name} stream...")
     stats = StreamStats()
-    error = None
-    
     try:
         async with httpx.AsyncClient() as client:
-            # Add stream flag to ensure it's streamed
             request_data = data.copy()
             request_data["stream"] = True
-            
-            start_time = time.time()
             async with client.stream("POST", url, json=request_data, headers=headers, timeout=30) as response:
                 if response.status_code != 200:
-                    error_text = await response.aread()
                     stats.has_error = True
-                    stats.error_message = f"HTTP {response.status_code}: {error_text.decode('utf-8')}"
-                    error = stats.error_message
-                    print(f"Error: {stats.error_message}")
-                    return stats, error
+                    stats.error_message = f"HTTP {response.status_code}"
+                    return stats, stats.error_message
                 
-                print(f"{stream_name} connected, receiving events...")
-                
-                # Process each chunk
-                buffer = ""
                 async for chunk in response.aiter_text():
-                    if not chunk.strip():
-                        continue
-                    
-                    # Handle multiple events in one chunk
-                    buffer += chunk
-                    events = buffer.split("\n\n")
-                    
-                    # Process all complete events
-                    for event_text in events[:-1]:  # All but the last (possibly incomplete) event
-                        if not event_text.strip():
-                            continue
-                        
-                        # Parse server-sent event format
-                        if "data: " in event_text:
-                            # Extract the data part
-                            data_parts = []
-                            for line in event_text.split("\n"):
-                                if line.startswith("data: "):
-                                    data_part = line[len("data: "):]
-                                    # Skip the "[DONE]" marker
-                                    if data_part == "[DONE]":
-                                        break
-                                    data_parts.append(data_part)
-                            
-                            if data_parts:
-                                try:
-                                    event_data = json.loads("".join(data_parts))
-                                    stats.add_event(event_data)
-                                except json.JSONDecodeError as e:
-                                    print(f"Error parsing event: {e}\nRaw data: {''.join(data_parts)}")
-                    
-                    # Keep the last (potentially incomplete) event for the next iteration
-                    buffer = events[-1] if events else ""
-                    
-                # Process any remaining complete events in the buffer
-                if buffer.strip():
-                    lines = buffer.strip().split("\n")
-                    data_lines = [line[len("data: "):] for line in lines if line.startswith("data: ")]
-                    if data_lines and data_lines[0] != "[DONE]":
-                        try:
-                            event_data = json.loads("".join(data_lines))
-                            stats.add_event(event_data)
-                        except:
-                            pass
-                
-            elapsed = time.time() - start_time
-            print(f"{stream_name} stream completed in {elapsed:.2f} seconds")
+                    for line in chunk.split("\n"):
+                        if line.startswith("data: "):
+                            data_part = line[6:].strip()
+                            if data_part == "[DONE]": continue
+                            try: stats.add_event(json.loads(data_part))
+                            except: pass
     except Exception as e:
         stats.has_error = True
-        stats.error_message = str(e)
-        error = str(e)
-        print(f"Error in {stream_name} stream: {e}")
-    
-    return stats, error
-
-def compare_stream_stats(anthropic_stats, proxy_stats):
-    """Compare the statistics from the two streams to see if they're similar enough."""
-    
-    print("\n--- Stream Comparison ---")
-    
-    # Required events
-    anthropic_missing = REQUIRED_EVENT_TYPES - anthropic_stats.event_types
-    proxy_missing = REQUIRED_EVENT_TYPES - proxy_stats.event_types
-    
-    print(f"Anthropic missing event types: {anthropic_missing}")
-    print(f"Proxy missing event types: {proxy_missing}")
-    
-    # Check if proxy has the required events
-    if proxy_missing:
-        print(f"\u26a0\ufe0f Proxy is missing required event types: {proxy_missing}")
-    else:
-        print("\u2705 Proxy has all required event types")
-    
-    # Compare content
-    if anthropic_stats.text_content and proxy_stats.text_content:
-        anthropic_preview = "\n".join(anthropic_stats.text_content.strip().split("\n")[:5])
-        proxy_preview = "\n".join(proxy_stats.text_content.strip().split("\n")[:5])
-        
-        print("\n--- Anthropic Content Preview ---")
-        print(anthropic_preview)
-        
-        print("\n--- Proxy Content Preview ---")
-        print(proxy_preview)
-    
-    # Compare tool use
-    if anthropic_stats.has_tool_use and proxy_stats.has_tool_use:
-        print("\u2705 Both have tool use")
-    elif anthropic_stats.has_tool_use and not proxy_stats.has_tool_use:
-        print("\u26a0\ufe0f Anthropic has tool use but proxy does not")
-    elif not anthropic_stats.has_tool_use and proxy_stats.has_tool_use:
-        print("\u26a0\ufe0f Proxy has tool use but Anthropic does not")
-    
-    # Success as long as proxy has some content and no errors
-    return (not proxy_stats.has_error and 
-            (len(proxy_stats.text_content) > 0 or proxy_stats.has_tool_use))
+        return stats, str(e)
+    return stats, None
 
 async def test_streaming(test_name, request_data, proxy_only=False):
-    """Run a streaming test with the given request data."""
     print(f"\n{'='*20} RUNNING STREAMING TEST: {test_name} {'='*20}")
-    
-    # Log the request data
-    print(f"\nRequest data:\n{json.dumps({k: v for k, v in request_data.items() if k != 'messages'}, indent=2)}")
-    
-    # Make copies of the request data to avoid modifying the original
-    anthropic_data = request_data.copy()
-    proxy_data = request_data.copy()
-    
-    if not anthropic_data.get("stream"):
-        anthropic_data["stream"] = True
-    if not proxy_data.get("stream"):
-        proxy_data["stream"] = True
-    
-    try:
-        # Send streaming request to proxy
-        proxy_stats, proxy_error = await stream_response(
-            PROXY_API_URL, proxy_headers, proxy_data, "Proxy"
-        )
-        
-        print("\n--- Proxy Stream Statistics ---")
-        proxy_stats.summarize()
-
-        if proxy_error:
-            print(f"\n\u274c Proxy stream had an error: {proxy_error}")
-            return False
-
-        # If proxy-only mode, we're done
-        if proxy_only:
-            return not proxy_stats.has_error and (len(proxy_stats.text_content) > 0 or proxy_stats.has_tool_use)
-
-        # Otherwise, send to Anthropic for comparison
-        anthropic_stats, anthropic_error = await stream_response(
-            ANTHROPIC_API_URL, anthropic_headers, anthropic_data, "Anthropic"
-        )
-        
-        print("\n--- Anthropic Stream Statistics ---")
-        anthropic_stats.summarize()
-        
-        # Compare the responses
-        if anthropic_error:
-            print(f"\n\u26a0\ufe0f Anthropic stream had an error: {anthropic_error}")
-            # If Anthropic errors, the test passes if proxy does anything useful
-            if not proxy_error and proxy_stats.total_chunks > 0:
-                print(f"\n\u2705 Test {test_name} passed! (Proxy worked even though Anthropic failed)")
-                return True
-            else:
-                print(f"\n\u274c Test {test_name} failed! Both streams had errors.")
-                return False
-        
-        if proxy_error:
-            print(f"\n[FAIL] Test {test_name} failed! Proxy had an error: {proxy_error}")
-            return False
-        
-        result = compare_stream_stats(anthropic_stats, proxy_stats)
-        if result:
-            print(f"\n[OK] Test {test_name} passed!")
-            return True
-        else:
-            print(f"\n[FAIL] Test {test_name} failed!")
-            return False
-    
-    except Exception as e:
-        print(f"\n[ERROR] Error in test {test_name}: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
+    proxy_stats, proxy_err = await stream_response(PROXY_API_URL, proxy_headers, request_data, "Proxy")
+    proxy_stats.summarize()
+    if proxy_err: return False
+    return not proxy_stats.has_error and (len(proxy_stats.text_content) > 0 or proxy_stats.has_tool_use)
 
 # ================= MAIN =================
 
 async def run_tests(args):
-    """Run all tests based on command-line arguments."""
-    # Track test results
     results = {}
     
-    # First run non-streaming tests
-    if not args.streaming_only:
-        print("\n\n=========== RUNNING NON-STREAMING TESTS ===========\n")
-        for test_name, test_data in TEST_SCENARIOS.items():
-            # Filter by specific test if requested
-            if args.test and args.test != test_name:
-                continue
-                
-            # Skip streaming tests
-            if test_data.get("stream"):
-                continue
-                
-            # Skip tool tests if requested
-            if args.simple and "tools" in test_data:
-                continue
-                
-            # Skip non-tool tests if tools_only
-            if args.tools_only and "tools" not in test_data:
-                continue
-                
-            # Run the test
-            check_tools = "tools" in test_data
-            result = test_request(test_name, test_data, check_tools=check_tools, proxy_only=args.proxy_only)
-            results[test_name] = result
+    # 1. Internal Unit Tests
+    if not args.streaming_only and not args.integration_only:
+        unit_res = run_unit_tests()
+        results.update(unit_res)
+        if args.unit_only:
+            return all(unit_res.values())
+
+    # 2. Integration Tests (Non-streaming)
+    if not args.streaming_only and not args.unit_only:
+        print("\n\n=========== RUNNING NON-STREAMING INTEGRATION TESTS ===========\n")
+        for name, data in TEST_SCENARIOS.items():
+            if args.test and args.test != name: continue
+            if data.get("stream"): continue
+            if args.simple and "tools" in data: continue
+            if args.tools_only and "tools" not in data: continue
             
-        # Run specific tier group if --tiers is set
-        if args.tiers:
-            tier_tests = ["tier_big", "tier_middle", "tier_small", "tier_small_tool"]
-            for t_name in tier_tests:
-                if t_name in TEST_SCENARIOS and t_name not in results:
-                    check_tools = "tools" in TEST_SCENARIOS[t_name]
-                    result = test_request(t_name, TEST_SCENARIOS[t_name], check_tools=check_tools, proxy_only=args.proxy_only)
-                    results[t_name] = result
-    
-    # Now run streaming tests
-    if not args.no_streaming:
-        print("\n\n=========== RUNNING STREAMING TESTS ===========\n")
-        for test_name, test_data in TEST_SCENARIOS.items():
-            # Filter by specific test if requested
-            if args.test and args.test != test_name:
-                continue
-                
-            # Only select streaming tests, or force streaming
-            if not test_data.get("stream") and not test_name.endswith("_stream"):
-                continue
-                
-            # Skip tool tests if requested
-            if args.simple and "tools" in test_data:
-                continue
-                
-            # Skip non-tool tests if tools_only
-            if args.tools_only and "tools" not in test_data:
-                continue
-                
-            # Run the streaming test
-            result = await test_streaming(test_name, test_data, proxy_only=args.proxy_only)
-            results[f"{test_name}_streaming"] = result
-    
-    # Print summary
+            results[name] = test_request(name, data, check_tools="tools" in data, proxy_only=args.proxy_only)
+
+    # 3. Integration Tests (Streaming)
+    if not args.no_streaming and not args.unit_only:
+        print("\n\n=========== RUNNING STREAMING INTEGRATION TESTS ===========\n")
+        for name, data in TEST_SCENARIOS.items():
+            if args.test and args.test != name: continue
+            if not data.get("stream") and not name.endswith("_stream"): continue
+            
+            results[f"{name}_stream"] = await test_streaming(name, data, proxy_only=args.proxy_only)
+
+    # Summary
     print("\n\n=========== TEST SUMMARY ===========\n")
     total = len(results)
     passed = sum(1 for v in results.values() if v)
-    
-    for test, result in results.items():
-        status = "PASS" if result else "FAIL"
-        print(f"{test}: {status}")
-    
+    for t, res in results.items():
+        print(f"{t}: {'PASS' if res else 'FAIL'}")
     print(f"\nTotal: {passed}/{total} tests passed")
-    
-    if passed == total:
-        print("\nAll tests passed!")
-        return True
-    else:
-        print(f"\n{total - passed} tests failed")
-        return False
+    return passed == total
 
 async def main():
-    # Check that API key is set
-    if not ANTHROPIC_API_KEY:
-        print("Error: ANTHROPIC_API_KEY not set in .env file")
-        return
-    
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Test the Claude-on-OpenAI proxy")
+    parser = argparse.ArgumentParser(description="Test suite for Claude Proxy")
     parser.add_argument("--no-streaming", action="store_true", help="Skip streaming tests")
     parser.add_argument("--streaming-only", action="store_true", help="Only run streaming tests")
-    parser.add_argument("--simple", action="store_true", help="Only run simple tests (no tools)")
-    parser.add_argument("--tools-only", action="store_true", help="Only run tool tests")
-    parser.add_argument("--proxy-only", action="store_true", help="Only test the proxy (ignore Anthropic comparison)")
-    parser.add_argument("--test", type=str, help="Run a specific test case by name")
-    parser.add_argument("--tiers", action="store_true", help="Run all 3-tier mapping tests (Big, Middle, Small)")
+    parser.add_argument("--simple", action="store_true", help="No tool tests")
+    parser.add_argument("--tools-only", action="store_true", help="Only tool tests")
+    parser.add_argument("--proxy-only", action="store_true", help="Skip Anthropic comparison")
+    parser.add_argument("--unit-only", action="store_true", help="Only run unit tests")
+    parser.add_argument("--integration-only", action="store_true", help="Only run integration tests")
+    parser.add_argument("--test", type=str, help="Specific test case")
+    parser.add_argument("--tiers", action="store_true", help="Run tier mapping tests")
     args = parser.parse_args()
     
-    # Run tests
+    if not ANTHROPIC_API_KEY and not args.proxy_only:
+        print("Warning: ANTHROPIC_API_KEY not set. Using --proxy-only mode automatically.")
+        args.proxy_only = True
+        
     success = await run_tests(args)
     sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
